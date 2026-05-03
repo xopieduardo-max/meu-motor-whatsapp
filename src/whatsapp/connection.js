@@ -70,6 +70,46 @@ class WAConnection {
 
       this.socket.ev.on('creds.update', saveCreds)
 
+      // Encaminha mensagens recebidas para o webhook configurado
+      this.socket.ev.on('messages.upsert', async ({ messages, type }) => {
+        if (type !== 'notify') return
+        const webhookUrl = process.env.WEBHOOK_URL
+        if (!webhookUrl) return
+
+        for (const msg of messages) {
+          if (msg.key.fromMe) continue // ignora mensagens enviadas pelo bot
+
+          const from = (msg.key.remoteJid || '').replace(/@.*$/, '')
+          if (!from) continue
+
+          const text =
+            msg.message?.conversation ||
+            msg.message?.extendedTextMessage?.text ||
+            msg.message?.buttonsResponseMessage?.selectedDisplayText ||
+            msg.message?.listResponseMessage?.title ||
+            ''
+
+          const payload = {
+            instanceId: this.instanceId,
+            from,
+            message: { text },
+            fromMe: false,
+            pushName: msg.pushName || '',
+            timestamp: msg.messageTimestamp,
+          }
+
+          try {
+            await fetch(webhookUrl, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(payload),
+            })
+          } catch (err) {
+            console.error(`[${this.instanceName}] Erro ao disparar webhook:`, err.message)
+          }
+        }
+      })
+
     } catch (err) {
       console.error(`[${this.instanceName}] Erro ao conectar:`, err.message)
       this.status = 'error'
