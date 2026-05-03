@@ -1,4 +1,4 @@
-const { makeWASocket, DisconnectReason, fetchLatestBaileysVersion } = require('@whiskeysockets/baileys')
+const { makeWASocket, DisconnectReason, fetchLatestBaileysVersion, Browsers } = require('@whiskeysockets/baileys')
 const { Boom } = require('@hapi/boom')
 const QRCode = require('qrcode')
 const pino = require('pino')
@@ -24,9 +24,11 @@ class WAConnection {
         auth: state,
         logger: pino({ level: 'silent' }),
         printQRInTerminal: false,
-        browser: ['Motor Eduardo', 'Chrome', '120.0.0'],
-        connectTimeoutMs: 30000,
-        defaultQueryTimeoutMs: 30000,
+        browser: Browsers.ubuntu('Chrome'),
+        connectTimeoutMs: 60000,
+        defaultQueryTimeoutMs: 60000,
+        keepAliveIntervalMs: 10000,
+        retryRequestDelayMs: 2000,
       })
 
       this.socket.ev.on('connection.update', async (update) => {
