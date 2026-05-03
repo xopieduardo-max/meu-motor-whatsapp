@@ -152,6 +152,10 @@ class WAConnection {
   async enviarTexto(numero, texto) {
     this._verificarConexao()
     const jid = this._formatarJID(numero)
+    console.log(`[${this.instanceName}] ENVIAR → jid=${jid} texto="${texto.slice(0,50)}"`)
+    if (typeof global.addDebugLog === 'function') {
+      global.addDebugLog({ event: 'send_text', instance: this.instanceName, to_jid: jid, text: texto.slice(0, 80) })
+    }
     await this.socket.sendMessage(jid, { text: texto })
     await this._salvarMensagem(numero, 'text', texto)
   }
