@@ -72,9 +72,18 @@ class WAConnection {
 
       // Encaminha mensagens recebidas para o webhook configurado
       this.socket.ev.on('messages.upsert', async ({ messages, type }) => {
-        if (type !== 'notify') return
+        console.log(`[${this.instanceName}] messages.upsert tipo=${type} qtd=${messages.length}`)
+
         const webhookUrl = process.env.WEBHOOK_URL
-        if (!webhookUrl) return
+        if (typeof global.addDebugLog === 'function') {
+          global.addDebugLog({ event: 'messages.upsert', instance: this.instanceName, type, count: messages.length, webhookUrl: webhookUrl || null })
+        }
+
+        if (type !== 'notify') return
+        if (!webhookUrl) {
+          console.warn(`[${this.instanceName}] WEBHOOK_URL não configurado — mensagem ignorada`)
+          return
+        }
 
         for (const msg of messages) {
           if (msg.key.fromMe) continue // ignora mensagens enviadas pelo bot
@@ -98,14 +107,27 @@ class WAConnection {
             timestamp: msg.messageTimestamp,
           }
 
+          console.log(`[${this.instanceName}] Disparando webhook → from=${from} text="${text}"`)
+          if (typeof global.addDebugLog === 'function') {
+            global.addDebugLog({ event: 'webhook_dispatch', instance: this.instanceName, from, text, webhookUrl })
+          }
+
           try {
-            await fetch(webhookUrl, {
+            const res = await fetch(webhookUrl, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify(payload),
             })
+            const body = await res.text()
+            console.log(`[${this.instanceName}] Webhook respondeu ${res.status}: ${body}`)
+            if (typeof global.addDebugLog === 'function') {
+              global.addDebugLog({ event: 'webhook_response', instance: this.instanceName, status: res.status, body })
+            }
           } catch (err) {
             console.error(`[${this.instanceName}] Erro ao disparar webhook:`, err.message)
+            if (typeof global.addDebugLog === 'function') {
+              global.addDebugLog({ event: 'webhook_error', instance: this.instanceName, error: err.message })
+            }
           }
         }
       })
