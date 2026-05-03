@@ -204,8 +204,10 @@ class WAConnection {
   }
 
   _formatarJID(numero) {
-    // Sempre converte para @s.whatsapp.net (funciona com LID e número normal)
-    const limpo = String(numero).replace(/\D/g, '')
+    const s = String(numero)
+    // Se já é um JID completo (tem @), usa direto — suporta @lid e @s.whatsapp.net
+    if (s.includes('@')) return s
+    const limpo = s.replace(/\D/g, '')
     return `${limpo}@s.whatsapp.net`
   }
 
