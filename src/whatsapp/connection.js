@@ -12,6 +12,8 @@ class WAConnection {
     this.socket = null
     this.qrBase64 = null
     this.status = 'disconnected'
+    // Mapeamento de número limpo → JID completo (ex: "112352116666619" → "112352116666619@lid")
+    this._jidCache = {}
   }
 
   async connect() {
@@ -97,8 +99,11 @@ class WAConnection {
           if (rawJid.endsWith('@g.us') || rawJid.endsWith('@broadcast') || rawJid === 'status@broadcast') continue
           if (msg.key.fromMe) continue // ignora mensagens enviadas pelo bot
 
-          const from = rawJid.replace(/@.*$/, '').replace(/:\d+$/, '') // remove sufixo de dispositivo ex: 55xxx:7@s.whatsapp.net
+          const from = rawJid.replace(/@.*$/, '').replace(/:\d+$/, '') // remove sufixo de dispositivo
           if (!from) continue
+
+          // Guarda mapeamento número → JID completo para uso no envio
+          this._jidCache[from] = rawJid
 
           const text =
             msg.message?.conversation ||
@@ -205,9 +210,11 @@ class WAConnection {
 
   _formatarJID(numero) {
     const s = String(numero)
-    // Se já é um JID completo (tem @), usa direto — suporta @lid e @s.whatsapp.net
+    // Se já é um JID completo (tem @), usa direto
     if (s.includes('@')) return s
     const limpo = s.replace(/\D/g, '')
+    // Se temos o JID completo mapeado (ex: @lid), usa ele
+    if (this._jidCache[limpo]) return this._jidCache[limpo]
     return `${limpo}@s.whatsapp.net`
   }
 
