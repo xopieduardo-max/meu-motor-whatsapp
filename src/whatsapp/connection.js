@@ -86,9 +86,18 @@ class WAConnection {
         }
 
         for (const msg of messages) {
+          // Loga o remoteJid bruto para diagnóstico
+          const rawJid = msg.key.remoteJid || ''
+          console.log(`[${this.instanceName}] rawJid=${rawJid} fromMe=${msg.key.fromMe}`)
+          if (typeof global.addDebugLog === 'function') {
+            global.addDebugLog({ event: 'raw_message', instance: this.instanceName, rawJid, fromMe: msg.key.fromMe, msgType: Object.keys(msg.message || {}).join(',') })
+          }
+
+          // Ignora grupos, broadcasts e status
+          if (rawJid.endsWith('@g.us') || rawJid.endsWith('@broadcast') || rawJid === 'status@broadcast') continue
           if (msg.key.fromMe) continue // ignora mensagens enviadas pelo bot
 
-          const from = (msg.key.remoteJid || '').replace(/@.*$/, '')
+          const from = rawJid.replace(/@.*$/, '').replace(/:\d+$/, '') // remove sufixo de dispositivo ex: 55xxx:7@s.whatsapp.net
           if (!from) continue
 
           const text =
