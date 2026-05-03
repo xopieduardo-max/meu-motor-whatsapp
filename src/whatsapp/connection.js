@@ -200,8 +200,7 @@ class WAConnection {
   }
 
   _formatarJID(numero) {
-    // Se já é um JID completo (contém @), usa direto
-    if (String(numero).includes('@')) return String(numero)
+    // Sempre converte para @s.whatsapp.net (funciona com LID e número normal)
     const limpo = String(numero).replace(/\D/g, '')
     return `${limpo}@s.whatsapp.net`
   }
