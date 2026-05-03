@@ -109,7 +109,8 @@ class WAConnection {
 
           const payload = {
             instanceId: this.instanceId,
-            from,
+            from: rawJid,   // JID completo: "5543xxx@s.whatsapp.net" ou "xxx@lid"
+            fromPhone: from, // número limpo (sem sufixo)
             message: { text },
             fromMe: false,
             pushName: msg.pushName || '',
@@ -199,8 +200,10 @@ class WAConnection {
   }
 
   _formatarJID(numero) {
-    const limpo = numero.replace(/\D/g, '')
-    return limpo.includes('@') ? limpo : `${limpo}@s.whatsapp.net`
+    // Se já é um JID completo (contém @), usa direto
+    if (String(numero).includes('@')) return String(numero)
+    const limpo = String(numero).replace(/\D/g, '')
+    return `${limpo}@s.whatsapp.net`
   }
 
   async _salvarStatus(status, phone = null) {
