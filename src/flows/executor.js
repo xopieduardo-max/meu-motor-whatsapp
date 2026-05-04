@@ -1,5 +1,4 @@
 const { getClient } = require('../lib/app-supabase')
-const manager = require('../whatsapp/manager')
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -85,6 +84,8 @@ function validateAnswer(validate, text) {
 // ── Envio via Baileys ─────────────────────────────────────────────────────────
 
 async function sendMsg(instanceId, phone, text) {
+  // lazy require para evitar dependência circular com manager.js
+  const manager = require('../whatsapp/manager')
   const conn = manager.obterConexao(instanceId)
   if (!conn) { console.error(`[executor] instância ${instanceId} não encontrada`); return }
   try { await conn.enviarTexto(phone, text) }
