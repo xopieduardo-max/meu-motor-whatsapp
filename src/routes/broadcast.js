@@ -3,26 +3,39 @@ const manager = require('../whatsapp/manager')
 const { getClient } = require('../lib/app-supabase')
 
 // POST /broadcast
-// Suporta: text, image, audio, pdf, flow — para contatos e grupos
 router.post('/', async (req, res) => {
   try {
-    const { instanceId, recipients, message, mediaUrl, mediaType, flowId, delayMs = 2500 } = req.body
-    // recipients: array de strings (phones ou group JIDs)
-    if (!instanceId || !Array.isArray(recipients) || recipients.length === 0) {
+    const { instanceId, recipients, recipientNames = {}, message, mediaUrl, mediaType, flowId, delayMs = 2500, broadcastId } = req.body
+    if (!instanceId || !Array.isArray(recipients) || recipients.length === 0)
       return res.status(400).json({ error: 'instanceId e recipients[] são obrigatórios' })
-    }
-    if (!message && !mediaUrl && !flowId) {
+    if (!message && !mediaUrl && !flowId)
       return res.status(400).json({ error: 'Informe message, mediaUrl ou flowId' })
-    }
 
     const conn = manager.obterConexao(instanceId)
     if (!conn) return res.status(404).json({ error: 'Instância não encontrada' })
 
-    res.json({ ok: true, total: recipients.length, message: 'Disparo iniciado em background' })
+    const db = require('../lib/app-supabase').getClient()
+
+    // Cria registros pendentes para cada destinatário
+    if (broadcastId && db) {
+      const rows = recipients.map(phone => ({
+        broadcast_id: broadcastId,
+        phone: String(phone),
+        name: recipientNames[phone] || null,
+        status: 'pending',
+      }))
+      // Insere em lotes de 50
+      for (let i = 0; i < rows.length; i += 50) {
+        await db.from('broadcast_recipients').insert(rows.slice(i, i + 50))
+      }
+    }
+
+    res.json({ ok: true, total: recipients.length })
 
     ;(async () => {
-      let enviados = 0, erros = 0
       for (const to of recipients) {
+        let success = false
+        let errMsg = null
         try {
           if (flowId) {
             const { processMessage } = require('../flows/executor')
@@ -36,14 +49,71 @@ router.post('/', async (req, res) => {
           } else if (message) {
             await conn.enviarTexto(to, message)
           }
-          enviados++
+          success = true
         } catch (e) {
-          console.error(`[broadcast] Erro ao enviar para ${to}:`, e.message)
-          erros++
+          errMsg = e.message
+          console.error(`[broadcast] Erro em ${to}:`, e.message)
         }
+
+        // Atualiza status individual
+        if (broadcastId && db) {
+          await db.from('broadcast_recipients')
+            .update({ status: success ? 'sent' : 'failed', error: errMsg, sent_at: success ? new Date().toISOString() : null })
+            .eq('broadcast_id', broadcastId).eq('phone', String(to)).eq('status', 'pending')
+        }
+
         await new Promise(r => setTimeout(r, delayMs))
       }
-      console.log(`[broadcast] Concluído: ${enviados} enviados, ${erros} erros`)
+
+      // Atualiza status do broadcast principal
+      if (broadcastId && db) {
+        const { data: stats } = await db.from('broadcast_recipients')
+          .select('status').eq('broadcast_id', broadcastId)
+        const all = stats ?? []
+        const failed = all.filter(r => r.status === 'failed').length
+        await db.from('broadcasts').update({
+          status: failed === 0 ? 'completed' : failed === all.length ? 'failed' : 'partial'
+        }).eq('id', broadcastId)
+      }
+      console.log(`[broadcast ${broadcastId}] Concluído`)
+    })()
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// POST /broadcast/resend/:broadcastId — reenvia só os que falharam
+router.post('/resend/:broadcastId', async (req, res) => {
+  try {
+    const { broadcastId } = req.params
+    const db = require('../lib/app-supabase').getClient()
+    if (!db) return res.status(500).json({ error: 'Supabase não configurado' })
+
+    // Busca broadcast + destinatários com falha
+    const { data: brd } = await db.from('broadcasts').select('*').eq('id', broadcastId).maybeSingle()
+    if (!brd) return res.status(404).json({ error: 'Broadcast não encontrado' })
+
+    const { data: failed } = await db.from('broadcast_recipients')
+      .select('*').eq('broadcast_id', broadcastId).eq('status', 'failed')
+    if (!failed?.length) return res.json({ ok: true, message: 'Nenhuma falha para reenviar' })
+
+    const conn = manager.obterConexao(brd.instance_id)
+    if (!conn) return res.status(404).json({ error: 'Instância não encontrada' })
+
+    res.json({ ok: true, resending: failed.length })
+
+    ;(async () => {
+      for (const r of failed) {
+        let success = false; let errMsg = null
+        try {
+          if (brd.message) await conn.enviarTexto(r.phone, brd.message)
+          success = true
+        } catch (e) { errMsg = e.message }
+        await db.from('broadcast_recipients')
+          .update({ status: success ? 'sent' : 'failed', error: errMsg, sent_at: success ? new Date().toISOString() : null })
+          .eq('id', r.id)
+        await new Promise(r => setTimeout(r, 2500))
+      }
     })()
   } catch (e) {
     res.status(500).json({ error: e.message })
