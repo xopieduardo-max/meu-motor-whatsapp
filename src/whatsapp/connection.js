@@ -7,28 +7,33 @@ const { useSupabaseAuthState } = require('./authState')
 const { processMessage } = require('../flows/executor')
 const ffmpeg = require('fluent-ffmpeg')
 const ffmpegPath = require('@ffmpeg-installer/ffmpeg').path
-const { Readable, PassThrough } = require('stream')
+const os = require('os')
+const fs = require('fs')
+const path = require('path')
 ffmpeg.setFfmpegPath(ffmpegPath)
 
 async function converterParaOgg(buffer) {
-  return new Promise((resolve, reject) => {
-    const input = new Readable()
-    input.push(buffer)
-    input.push(null)
-    const output = new PassThrough()
-    const chunks = []
-    output.on('data', d => chunks.push(d))
-    output.on('end', () => resolve(Buffer.concat(chunks)))
-    output.on('error', reject)
-    ffmpeg(input)
-      .inputFormat('mp3')
-      .audioCodec('libopus')
-      .audioChannels(1)
-      .audioFrequency(48000)
-      .format('ogg')
-      .on('error', reject)
-      .pipe(output, { end: true })
-  })
+  const id = Date.now()
+  const tmpIn  = path.join(os.tmpdir(), `wa_audio_${id}_in.mp3`)
+  const tmpOut = path.join(os.tmpdir(), `wa_audio_${id}_out.ogg`)
+  try {
+    fs.writeFileSync(tmpIn, buffer)
+    await new Promise((resolve, reject) => {
+      ffmpeg(tmpIn)
+        .audioCodec('libopus')
+        .audioChannels(1)
+        .audioFrequency(48000)
+        .audioBitrate('64k')
+        .format('ogg')
+        .on('end', resolve)
+        .on('error', reject)
+        .save(tmpOut)
+    })
+    return fs.readFileSync(tmpOut)
+  } finally {
+    try { fs.unlinkSync(tmpIn)  } catch {}
+    try { fs.unlinkSync(tmpOut) } catch {}
+  }
 }
 
 class WAConnection {
