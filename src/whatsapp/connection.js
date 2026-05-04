@@ -174,10 +174,14 @@ class WAConnection {
   async enviarAudio(numero, url) {
     this._verificarConexao()
     const jid = this._formatarJID(numero)
+    const u = (url || '').toLowerCase()
+    const isOgg = u.includes('.ogg') || u.includes('.opus')
+    const isOp  = u.includes('.oga')
+    const mimetype = (isOgg || isOp) ? 'audio/ogg; codecs=opus' : 'audio/mpeg'
     await this.socket.sendMessage(jid, {
       audio: { url },
-      mimetype: 'audio/mp4',
-      ptt: true
+      mimetype,
+      ptt: isOgg || isOp, // voz só para ogg/opus
     })
     await this._salvarMensagem(numero, 'audio', url)
   }

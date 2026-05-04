@@ -3,7 +3,9 @@ const { getClient } = require('../lib/app-supabase')
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function interpolate(text, vars) {
-  return String(text ?? '').replace(/\{\{\s*(\w+)\s*\}\}/g, (_, k) => String(vars[k] ?? ''))
+  return String(text ?? '')
+    .replace(/\{\{\s*(\w+)\s*\}\}/g, (_, k) => String(vars[k] ?? '')) // {{nome}}
+    .replace(/\[(\w+)\]/g, (_, k) => vars[k] !== undefined ? String(vars[k]) : `[${k}]`) // [nome]
 }
 
 function slugify(s) {
