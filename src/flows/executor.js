@@ -193,15 +193,23 @@ async function applyTag(userId, phone, tag, action) {
 // ── Ponto de entrada ──────────────────────────────────────────────────────────
 
 async function processMessage({ instanceRemoteId, fromJid, userText }) {
-  const db = getClient()
-  if (!db) { console.error('[executor] Supabase não configurado'); return }
+  const log = (msg) => {
+    console.log(`[executor] ${msg}`)
+    if (typeof global.addDebugLog === 'function') global.addDebugLog({ event: 'exec_log', msg })
+  }
 
-  // Número limpo (usado como contact_phone e para envio)
+  const db = getClient()
+  if (!db) { log('ERRO: Supabase não configurado'); return }
+
+  log(`início: instance=${instanceRemoteId} from=${fromJid} text="${userText}"`)
+
   const phone = fromJid
 
   // 1. Busca instância
-  const { data: inst } = await db.from('instances').select('*').eq('remote_id', instanceRemoteId).maybeSingle()
-  if (!inst) { console.log('[executor] instância não encontrada:', instanceRemoteId); return }
+  const { data: inst, error: instErr } = await db.from('instances').select('*').eq('remote_id', instanceRemoteId).maybeSingle()
+  if (instErr) { log(`ERRO instância: ${instErr.message}`); return }
+  if (!inst) { log(`instância não encontrada: ${instanceRemoteId}`); return }
+  log(`instância ok: id=${inst.id} user=${inst.user_id}`)
 
   // 2. Sessão ativa
   const { data: session } = await db.from('flow_sessions').select('*')
@@ -237,12 +245,15 @@ async function processMessage({ instanceRemoteId, fromJid, userText }) {
     flow = instFlows.find(f => !Array.isArray(f.keywords) || f.keywords.length === 0) ?? instFlows[0] ?? null
   }
 
-  if (!flow) { console.log('[executor] nenhum fluxo ativo para:', phone); return }
+  log(`fluxos encontrados: ${instFlows.length} | keywordMatch=${!!keywordMatch} | session=${!!session}`)
+  if (!flow) { log(`nenhum fluxo ativo para: ${phone}`); return }
+  log(`fluxo: ${flow.name} (${flow.id})`)
 
   const useSession = (!keywordMatch || (session && session.flow_id === flow.id)) ? session : null
 
   const nodes = flow.nodes ?? []
   const edges = flow.edges ?? []
+  log(`nodes=${nodes.length} edges=${edges.length}`)
   let startId, variables = {}
 
   if (useSession?.current_node_id) {
