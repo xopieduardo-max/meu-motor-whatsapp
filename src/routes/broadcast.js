@@ -1,56 +1,46 @@
 const router = require('express').Router()
 const manager = require('../whatsapp/manager')
 const { getClient } = require('../lib/app-supabase')
-const { processMessage } = require('../flows/executor')
 
 // POST /broadcast
-// Body: { instanceId, contacts: ["phone1", "phone2"], message } (mensagem simples)
-//    OU { instanceId, contacts: ["phone1"], flowId }            (dispara um fluxo)
+// Suporta: text, image, audio, pdf, flow — para contatos e grupos
 router.post('/', async (req, res) => {
   try {
-    const { instanceId, contacts, message, flowId, delayMs = 2000 } = req.body
-
-    if (!instanceId || !Array.isArray(contacts) || contacts.length === 0) {
-      return res.status(400).json({ error: 'instanceId e contacts[] são obrigatórios' })
+    const { instanceId, recipients, message, mediaUrl, mediaType, flowId, delayMs = 2500 } = req.body
+    // recipients: array de strings (phones ou group JIDs)
+    if (!instanceId || !Array.isArray(recipients) || recipients.length === 0) {
+      return res.status(400).json({ error: 'instanceId e recipients[] são obrigatórios' })
     }
-    if (!message && !flowId) {
-      return res.status(400).json({ error: 'Informe message (texto) ou flowId (fluxo)' })
+    if (!message && !mediaUrl && !flowId) {
+      return res.status(400).json({ error: 'Informe message, mediaUrl ou flowId' })
     }
 
     const conn = manager.obterConexao(instanceId)
     if (!conn) return res.status(404).json({ error: 'Instância não encontrada' })
 
-    res.json({ ok: true, total: contacts.length, message: 'Disparo iniciado em background' })
+    res.json({ ok: true, total: recipients.length, message: 'Disparo iniciado em background' })
 
-    // Executa em background com delay entre cada contato
     ;(async () => {
       let enviados = 0, erros = 0
-      for (const phone of contacts) {
+      for (const to of recipients) {
         try {
           if (flowId) {
-            // Dispara o fluxo para esse contato
-            const db = getClient()
-            const { data: flow } = await db.from('flows').select('*').eq('id', flowId).maybeSingle()
-            if (!flow) { erros++; continue }
-            const nodes = flow.nodes ?? []
-            const start = nodes.find(n => n.type === 'start') ?? nodes[0]
-            if (!start) { erros++; continue }
-            // Encerra sessão anterior se houver
-            await db.from('flow_sessions')
-              .update({ status: 'ended' })
-              .eq('contact_phone', phone)
-              .eq('status', 'active')
-            // Executa o fluxo
-            await processMessage({ instanceRemoteId: instanceId, fromJid: phone, userText: '' })
-          } else {
-            await conn.enviarTexto(phone, message)
+            const { processMessage } = require('../flows/executor')
+            await processMessage({ instanceRemoteId: instanceId, fromJid: to, userText: '' })
+          } else if (mediaType === 'image' && mediaUrl) {
+            await conn.enviarImagem(to, mediaUrl, message || '')
+          } else if (mediaType === 'audio' && mediaUrl) {
+            await conn.enviarAudio(to, mediaUrl)
+          } else if (mediaType === 'pdf' && mediaUrl) {
+            await conn.enviarPDF(to, mediaUrl)
+          } else if (message) {
+            await conn.enviarTexto(to, message)
           }
           enviados++
         } catch (e) {
-          console.error(`[broadcast] Erro ao enviar para ${phone}:`, e.message)
+          console.error(`[broadcast] Erro ao enviar para ${to}:`, e.message)
           erros++
         }
-        // Delay entre mensagens para evitar ban
         await new Promise(r => setTimeout(r, delayMs))
       }
       console.log(`[broadcast] Concluído: ${enviados} enviados, ${erros} erros`)
@@ -60,19 +50,28 @@ router.post('/', async (req, res) => {
   }
 })
 
-// GET /broadcast/contacts?tag=leads&userId=xxx
-// Lista contatos para disparar
+// GET /broadcast/contacts?tag=leads&segment=frios|compradores
 router.get('/contacts', async (req, res) => {
   try {
-    const { tag, userId } = req.query
+    const { tag, segment, userId } = req.query
     const db = getClient()
     if (!db) return res.status(500).json({ error: 'Supabase não configurado' })
 
-    let query = db.from('contacts').select('id, name, phone, tags')
+    let query = db.from('contacts').select('id, name, phone, tags, last_contact')
     if (userId) query = query.eq('user_id', userId)
-    if (tag) query = query.contains('tags', [tag])
 
-    const { data, error } = await query.order('created_at', { ascending: false }).limit(500)
+    if (tag) {
+      query = query.contains('tags', [tag])
+    } else if (segment === 'frios') {
+      // Sem contato há mais de 7 dias
+      const cutoff = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
+      query = query.or(`last_contact.lt.${cutoff},last_contact.is.null`)
+    } else if (segment === 'compradores') {
+      // Têm etiqueta com "compra" ou "cliente"
+      query = query.or('tags.cs.{compra_confirmada},tags.cs.{cliente},tags.cs.{comprador}')
+    }
+
+    const { data, error } = await query.order('name').limit(1000)
     if (error) return res.status(500).json({ error: error.message })
 
     res.json({ contacts: data ?? [], total: (data ?? []).length })

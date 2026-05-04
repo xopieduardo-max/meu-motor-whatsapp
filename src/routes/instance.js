@@ -88,6 +88,23 @@ router.post('/:id/reconnect', async (req, res) => {
   }
 })
 
+// Listar grupos do WhatsApp de uma instância
+router.get('/:id/groups', async (req, res) => {
+  try {
+    const conn = manager.obterConexao(req.params.id)
+    if (!conn) return res.status(404).json({ error: 'Instância não encontrada' })
+    const raw = await conn.socket.groupFetchAllParticipating()
+    const groups = Object.entries(raw || {}).map(([jid, g]) => ({
+      id: jid,
+      name: g.subject || jid,
+      participants: Array.isArray(g.participants) ? g.participants.length : 0,
+    }))
+    res.json({ groups })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
 // Deletar instância
 router.delete('/:id', async (req, res) => {
   try {
