@@ -24,7 +24,7 @@ app.get('/', (req, res) => {
   res.json({
     status: 'online',
     name: 'Motor WhatsApp - Eduardo',
-    version: '2.0.3',
+    version: '2.0.4',
     webhook_configured: !!process.env.WEBHOOK_URL,
     webhook_url: process.env.WEBHOOK_URL || null,
     timestamp: new Date().toISOString()
@@ -39,6 +39,8 @@ app.get('/health', (req, res) => {
 app.get('/debug', (req, res) => {
   res.json({
     webhook_url: process.env.WEBHOOK_URL || 'NÃO CONFIGURADO',
+    app_supabase_url: process.env.APP_SUPABASE_URL ? process.env.APP_SUPABASE_URL.slice(0, 40) + '...' : 'NÃO CONFIGURADO',
+    app_supabase_key: process.env.APP_SUPABASE_ANON_KEY ? 'OK (' + process.env.APP_SUPABASE_ANON_KEY.slice(0, 20) + '...)' : 'NÃO CONFIGURADO',
     instances_in_memory: manager.listarConexoes().map(c => ({
       id: c.id, name: c.name, status: c.status
     })),
