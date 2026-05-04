@@ -83,13 +83,28 @@ function validateAnswer(validate, text) {
 
 // ── Envio via Baileys ─────────────────────────────────────────────────────────
 
-async function sendMsg(instanceId, phone, text) {
-  // lazy require para evitar dependência circular com manager.js
-  const manager = require('../whatsapp/manager')
+function getConn(instanceId) {
+  const manager = require('../whatsapp/manager') // lazy — evita dependência circular
   const conn = manager.obterConexao(instanceId)
-  if (!conn) { console.error(`[executor] instância ${instanceId} não encontrada`); return }
+  if (!conn) console.error(`[executor] instância ${instanceId} não encontrada`)
+  return conn
+}
+
+async function sendMsg(instanceId, phone, text) {
+  const conn = getConn(instanceId)
+  if (!conn) return
   try { await conn.enviarTexto(phone, text) }
   catch (e) { console.error(`[executor] enviarTexto falhou:`, e.message) }
+}
+
+async function sendMedia(instanceId, phone, type, url, extra) {
+  const conn = getConn(instanceId)
+  if (!conn || !url) return
+  try {
+    if (type === 'image')  await conn.enviarImagem(phone, url, extra?.caption || '')
+    else if (type === 'audio') await conn.enviarAudio(phone, url)
+    else if (type === 'pdf' || type === 'video') await conn.enviarPDF(phone, url, extra?.filename || 'arquivo.pdf')
+  } catch (e) { console.error(`[executor] sendMedia(${type}) falhou:`, e.message) }
 }
 
 // ── Execução do fluxo ─────────────────────────────────────────────────────────
@@ -116,8 +131,9 @@ async function runFlow(opts) {
     }
 
     if (t === 'image' || t === 'audio' || t === 'video' || t === 'pdf') {
-      const cap = d.caption ? interpolate(d.caption, vars) : ''
-      await sendMsg(instanceId, phone, `${d.url ?? ''}${cap ? '\n' + cap : ''}`)
+      const url = interpolate(d.url ?? '', vars)
+      const caption = d.caption ? interpolate(d.caption, vars) : ''
+      await sendMedia(instanceId, phone, t, url, { caption, filename: d.filename || `arquivo.${t}` })
       cur = nextNode(edges, cur, null); continue
     }
 
