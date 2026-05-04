@@ -175,15 +175,39 @@ class WAConnection {
     this._verificarConexao()
     const jid = this._formatarJID(numero)
     const u = (url || '').toLowerCase()
-    const isOgg = u.includes('.ogg') || u.includes('.opus')
-    const isOp  = u.includes('.oga')
-    const mimetype = (isOgg || isOp) ? 'audio/ogg; codecs=opus' : 'audio/mpeg'
+    const isOgg = u.includes('.ogg') || u.includes('.opus') || u.includes('.oga')
+    const mimetype = isOgg ? 'audio/ogg; codecs=opus' : 'audio/mp4'
+    // Baixa o arquivo como buffer para garantir envio correto
+    const res = await fetch(url)
+    const buffer = Buffer.from(await res.arrayBuffer())
     await this.socket.sendMessage(jid, {
-      audio: { url },
+      audio: buffer,
       mimetype,
-      ptt: isOgg || isOp, // voz só para ogg/opus
+      ptt: isOgg,
     })
     await this._salvarMensagem(numero, 'audio', url)
+  }
+
+  async enviarImagem(numero, url, legenda = '') {
+    this._verificarConexao()
+    const jid = this._formatarJID(numero)
+    const res = await fetch(url)
+    const buffer = Buffer.from(await res.arrayBuffer())
+    await this.socket.sendMessage(jid, { image: buffer, caption: legenda })
+    await this._salvarMensagem(numero, 'image', url)
+  }
+
+  async enviarPDF(numero, url, nomeArquivo = 'documento.pdf') {
+    this._verificarConexao()
+    const jid = this._formatarJID(numero)
+    const res = await fetch(url)
+    const buffer = Buffer.from(await res.arrayBuffer())
+    await this.socket.sendMessage(jid, {
+      document: buffer,
+      mimetype: 'application/pdf',
+      fileName: nomeArquivo
+    })
+    await this._salvarMensagem(numero, 'document', url)
   }
 
   async enviarPDF(numero, url, nomeArquivo = 'documento.pdf') {
