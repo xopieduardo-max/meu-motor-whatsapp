@@ -86,33 +86,44 @@ router.post('/', async (req, res) => {
 router.post('/resend/:broadcastId', async (req, res) => {
   try {
     const { broadcastId } = req.params
+    const { instanceId, message } = req.body // recebe dados do frontend
     const db = require('../lib/app-supabase').getClient()
     if (!db) return res.status(500).json({ error: 'Supabase não configurado' })
 
-    // Busca broadcast + destinatários com falha
-    const { data: brd } = await db.from('broadcasts').select('*').eq('id', broadcastId).maybeSingle()
-    if (!brd) return res.status(404).json({ error: 'Broadcast não encontrado' })
+    if (!instanceId) return res.status(400).json({ error: 'instanceId é obrigatório' })
 
-    const { data: failed } = await db.from('broadcast_recipients')
-      .select('*').eq('broadcast_id', broadcastId).eq('status', 'failed')
-    if (!failed?.length) return res.json({ ok: true, message: 'Nenhuma falha para reenviar' })
-
-    const conn = manager.obterConexao(brd.instance_id)
+    const conn = manager.obterConexao(instanceId)
     if (!conn) return res.status(404).json({ error: 'Instância não encontrada' })
 
+    // Busca destinatários que falharam
+    const { data: failed } = await db.from('broadcast_recipients')
+      .select('*').eq('broadcast_id', broadcastId).eq('status', 'failed')
+    if (!failed?.length) return res.json({ ok: true, resending: 0, message: 'Nenhuma falha para reenviar' })
+
     res.json({ ok: true, resending: failed.length })
+
+    // Marca como pending antes de reenviar
+    await db.from('broadcast_recipients')
+      .update({ status: 'pending', error: null })
+      .eq('broadcast_id', broadcastId).eq('status', 'failed')
 
     ;(async () => {
       for (const r of failed) {
         let success = false; let errMsg = null
         try {
-          if (brd.message) await conn.enviarTexto(r.phone, brd.message)
+          if (message) await conn.enviarTexto(r.phone, message)
           success = true
         } catch (e) { errMsg = e.message }
         await db.from('broadcast_recipients')
           .update({ status: success ? 'sent' : 'failed', error: errMsg, sent_at: success ? new Date().toISOString() : null })
           .eq('id', r.id)
-        await new Promise(r => setTimeout(r, 2500))
+        await new Promise(resolve => setTimeout(resolve, 2500))
+      }
+      // Atualiza status do broadcast
+      const { data: all } = await db.from('broadcast_recipients').select('status').eq('broadcast_id', broadcastId)
+      const remaining = (all ?? []).filter(r => r.status === 'failed').length
+      if (remaining === 0) {
+        await db.from('broadcasts').update({ status: 'completed' }).eq('id', broadcastId)
       }
     })()
   } catch (e) {
