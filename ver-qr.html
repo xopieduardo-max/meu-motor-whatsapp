@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<title>Ver QR Code - Motor WhatsApp</title>
+<style>
+  body { font-family: Arial, sans-serif; background: #111; color: white; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; margin: 0; padding: 20px; }
+  h1 { color: #25D366; margin-bottom: 10px; }
+  p { color: #aaa; margin-bottom: 20px; text-align: center; }
+  #qr-box { background: white; padding: 20px; border-radius: 12px; display: none; }
+  #qr-box img { display: block; }
+  #status { color: #25D366; font-size: 1.1rem; margin-top: 15px; }
+  #error { color: #ff4444; font-size: 0.95rem; margin-top: 10px; display: none; }
+  button { background: #25D366; color: white; border: none; padding: 12px 30px; border-radius: 8px; font-size: 1rem; cursor: pointer; margin-top: 10px; }
+  button:hover { background: #1da851; }
+  input { padding: 10px; border-radius: 8px; border: none; width: 400px; font-size: 0.9rem; margin-bottom: 10px; }
+</style>
+</head>
+<body>
+
+<h1>📱 QR Code - Motor WhatsApp</h1>
+<p>Clique no botão para buscar o QR Code e escanear com o WhatsApp</p>
+
+<button onclick="buscarQR()">🔄 Buscar QR Code</button>
+
+<div id="status">Aguardando...</div>
+<div id="error"></div>
+<div id="qr-box"><img id="qr-img" src="" alt="QR Code"/></div>
+
+<script>
+const INSTANCE_ID = '7498974a-7206-43e4-a73e-4f7f09eba906'
+const BASE_URL = 'https://meu-motor-whatsapp-production.up.railway.app'
+
+async function buscarQR() {
+  document.getElementById('status').textContent = '⏳ Buscando QR Code...'
+  document.getElementById('error').style.display = 'none'
+  document.getElementById('qr-box').style.display = 'none'
+
+  try {
+    const res = await fetch(`${BASE_URL}/instance/${INSTANCE_ID}/qr`)
+    const data = await res.json()
+
+    if (data.qr) {
+      document.getElementById('qr-img').src = data.qr
+      document.getElementById('qr-box').style.display = 'block'
+      document.getElementById('status').textContent = '✅ Escaneie com o WhatsApp → Menu → Dispositivos conectados → Conectar'
+    } else if (data.status === 'connected') {
+      document.getElementById('status').textContent = '✅ WhatsApp já está conectado!'
+    } else {
+      document.getElementById('status').textContent = `Status: ${data.status}`
+    }
+  } catch (err) {
+    document.getElementById('error').textContent = 'Erro: ' + err.message
+    document.getElementById('error').style.display = 'block'
+    document.getElementById('status').textContent = ''
+  }
+}
+
+// Busca automático ao abrir
+buscarQR()
+setInterval(buscarQR, 30000) // Atualiza a cada 30 segundos
+</script>
+
+</body>
+</html>

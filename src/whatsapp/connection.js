@@ -4,6 +4,7 @@ const QRCode = require('qrcode')
 const pino = require('pino')
 const supabase = require('../lib/supabase')
 const { useSupabaseAuthState } = require('./authState')
+const { processMessage } = require('../flows/executor')
 
 class WAConnection {
   constructor(instanceId, instanceName) {
@@ -122,28 +123,26 @@ class WAConnection {
             timestamp: msg.messageTimestamp,
           }
 
-          console.log(`[${this.instanceName}] Disparando webhook → from=${from} text="${text}"`)
+          console.log(`[${this.instanceName}] Processando mensagem → from=${rawJid} text="${text}"`)
           if (typeof global.addDebugLog === 'function') {
-            global.addDebugLog({ event: 'webhook_dispatch', instance: this.instanceName, from, text, webhookUrl })
+            global.addDebugLog({ event: 'processing', instance: this.instanceName, fromJid: rawJid, text })
           }
 
-          try {
-            const res = await fetch(webhookUrl, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(payload),
-            })
-            const body = await res.text()
-            console.log(`[${this.instanceName}] Webhook respondeu ${res.status}: ${body}`)
+          // Executa o fluxo diretamente (sem depender do Lovable)
+          processMessage({
+            instanceRemoteId: this.instanceId,
+            fromJid: rawJid,
+            userText: text,
+          }).then(() => {
             if (typeof global.addDebugLog === 'function') {
-              global.addDebugLog({ event: 'webhook_response', instance: this.instanceName, status: res.status, body })
+              global.addDebugLog({ event: 'flow_done', instance: this.instanceName, fromJid: rawJid })
             }
-          } catch (err) {
-            console.error(`[${this.instanceName}] Erro ao disparar webhook:`, err.message)
+          }).catch(err => {
+            console.error(`[${this.instanceName}] Erro no executor:`, err.message)
             if (typeof global.addDebugLog === 'function') {
-              global.addDebugLog({ event: 'webhook_error', instance: this.instanceName, error: err.message })
+              global.addDebugLog({ event: 'flow_error', instance: this.instanceName, error: err.message })
             }
-          }
+          })
         }
       })
 
