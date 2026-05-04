@@ -237,13 +237,14 @@ async function processMessage({ instanceRemoteId, fromJid, userText }) {
   const { data: allFlows } = await db.from('flows').select('*').eq('user_id', inst.user_id).eq('status', 'active')
   const instFlows = (allFlows ?? []).filter(f => !f.instance_id || f.instance_id === inst.id)
 
-  // Expira sessão por inatividade (usa restart_policy do fluxo ou padrão 60 min)
+  // Expira sessão por inatividade — APENAS no modo cooldown (nunca expirar em 'always' sem keyword)
   if (session) {
     const sessionFlow = instFlows.find(f => f.id === session.flow_id)
-    const policy = sessionFlow?.restart_policy || { mode: 'always', cooldown_minutes: 60 }
+    const policy = sessionFlow?.restart_policy || { mode: 'cooldown', cooldown_minutes: 60 }
     const minutesSinceActivity = (Date.now() - new Date(session.updated_at).getTime()) / 60000
-    if (policy.mode === 'always' || (policy.mode === 'cooldown' && minutesSinceActivity > (policy.cooldown_minutes || 60))) {
-      log(`Sessão expirada (${Math.round(minutesSinceActivity)} min) — reiniciando fluxo`)
+    const shouldExpire = policy.mode === 'cooldown' && minutesSinceActivity > (policy.cooldown_minutes || 60)
+    if (shouldExpire) {
+      log(`Sessão expirada por inatividade (${Math.round(minutesSinceActivity)} min)`)
       await db.from('flow_sessions').update({ status: 'ended', updated_at: new Date().toISOString() }).eq('id', session.id)
       session = null
     }
