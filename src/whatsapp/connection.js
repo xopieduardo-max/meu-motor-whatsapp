@@ -5,6 +5,31 @@ const pino = require('pino')
 const supabase = require('../lib/supabase')
 const { useSupabaseAuthState } = require('./authState')
 const { processMessage } = require('../flows/executor')
+const ffmpeg = require('fluent-ffmpeg')
+const ffmpegPath = require('@ffmpeg-installer/ffmpeg').path
+const { Readable, PassThrough } = require('stream')
+ffmpeg.setFfmpegPath(ffmpegPath)
+
+async function converterParaOgg(buffer) {
+  return new Promise((resolve, reject) => {
+    const input = new Readable()
+    input.push(buffer)
+    input.push(null)
+    const output = new PassThrough()
+    const chunks = []
+    output.on('data', d => chunks.push(d))
+    output.on('end', () => resolve(Buffer.concat(chunks)))
+    output.on('error', reject)
+    ffmpeg(input)
+      .inputFormat('mp3')
+      .audioCodec('libopus')
+      .audioChannels(1)
+      .audioFrequency(48000)
+      .format('ogg')
+      .on('error', reject)
+      .pipe(output, { end: true })
+  })
+}
 
 class WAConnection {
   constructor(instanceId, instanceName) {
@@ -176,15 +201,21 @@ class WAConnection {
     const jid = this._formatarJID(numero)
     const u = (url || '').toLowerCase()
     const isOgg = u.includes('.ogg') || u.includes('.opus') || u.includes('.oga')
-    const mimetype = isOgg ? 'audio/ogg; codecs=opus' : 'audio/mp4'
-    // Baixa o arquivo como buffer para garantir envio correto
+    // Baixa o arquivo
     const res = await fetch(url)
-    const buffer = Buffer.from(await res.arrayBuffer())
-    await this.socket.sendMessage(jid, {
-      audio: buffer,
-      mimetype,
-      ptt: isOgg,
-    })
+    let buffer = Buffer.from(await res.arrayBuffer())
+    let mimetype = 'audio/ogg; codecs=opus'
+    // Converte MP3/outros para OGG Opus (único formato que toca no WhatsApp)
+    if (!isOgg) {
+      try {
+        buffer = await converterParaOgg(buffer)
+        console.log(`[${this.instanceName}] Áudio convertido para OGG Opus`)
+      } catch (e) {
+        console.error(`[${this.instanceName}] Falha na conversão de áudio:`, e.message)
+        mimetype = 'audio/mpeg' // fallback
+      }
+    }
+    await this.socket.sendMessage(jid, { audio: buffer, mimetype, ptt: true })
     await this._salvarMensagem(numero, 'audio', url)
   }
 
