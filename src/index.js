@@ -5,6 +5,8 @@ const cors = require('cors')
 const manager = require('./whatsapp/manager')
 const instanceRoutes = require('./routes/instance')
 const messageRoutes = require('./routes/message')
+const broadcastRoutes = require('./routes/broadcast')
+const { iniciarJobLembretes } = require('./flows/reminder')
 
 const app = express()
 const PORT = process.env.PORT || 3000
@@ -24,7 +26,7 @@ app.get('/', (req, res) => {
   res.json({
     status: 'online',
     name: 'Motor WhatsApp - Eduardo',
-    version: '2.2.1',
+    version: '2.3.0',
     webhook_configured: !!process.env.WEBHOOK_URL,
     webhook_url: process.env.WEBHOOK_URL || null,
     timestamp: new Date().toISOString()
@@ -55,6 +57,7 @@ app.get('/health', (req, res) => {
 // Rotas
 app.use('/instance', instanceRoutes)
 app.use('/message', messageRoutes)
+app.use('/broadcast', broadcastRoutes)
 
 // Iniciar servidor
 app.listen(PORT, async () => {
@@ -68,4 +71,7 @@ app.listen(PORT, async () => {
   } catch (err) {
     console.error('Erro ao iniciar instâncias:', err.message)
   }
+
+  // Job de lembretes automáticos
+  iniciarJobLembretes()
 })

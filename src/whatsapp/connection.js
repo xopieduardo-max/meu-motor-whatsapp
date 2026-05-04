@@ -45,6 +45,7 @@ class WAConnection {
     this.status = 'disconnected'
     // Mapeamento de número limpo → JID completo (ex: "112352116666619" → "112352116666619@lid")
     this._jidCache = {}
+    this._debounce = {} // anti-flooding: processa só última msg dentro de 600ms
   }
 
   async connect() {
@@ -143,36 +144,34 @@ class WAConnection {
             msg.message?.listResponseMessage?.title ||
             ''
 
-          const payload = {
-            instanceId: this.instanceId,
-            from: rawJid,   // JID completo: "5543xxx@s.whatsapp.net" ou "xxx@lid"
-            fromPhone: from, // número limpo (sem sufixo)
-            message: { text },
-            fromMe: false,
-            pushName: msg.pushName || '',
-            timestamp: msg.messageTimestamp,
-          }
+          // Marca mensagem como lida
+          try { await this.socket.readMessages([msg.key]) } catch {}
 
-          console.log(`[${this.instanceName}] Processando mensagem → from=${rawJid} text="${text}"`)
-          if (typeof global.addDebugLog === 'function') {
-            global.addDebugLog({ event: 'processing', instance: this.instanceName, fromJid: rawJid, text })
-          }
-
-          // Executa o fluxo diretamente (sem depender do Lovable)
-          processMessage({
-            instanceRemoteId: this.instanceId,
-            fromJid: rawJid,
-            userText: text,
-          }).then(() => {
+          // Anti-flooding: debounce de 600ms por contato
+          const debounceKey = `${this.instanceId}:${from}`
+          if (this._debounce[debounceKey]) clearTimeout(this._debounce[debounceKey])
+          this._debounce[debounceKey] = setTimeout(() => {
+            delete this._debounce[debounceKey]
+            console.log(`[${this.instanceName}] Processando → from=${rawJid} text="${text}"`)
             if (typeof global.addDebugLog === 'function') {
-              global.addDebugLog({ event: 'flow_done', instance: this.instanceName, fromJid: rawJid })
+              global.addDebugLog({ event: 'processing', instance: this.instanceName, fromJid: rawJid, text })
             }
-          }).catch(err => {
-            console.error(`[${this.instanceName}] Erro no executor:`, err.message)
-            if (typeof global.addDebugLog === 'function') {
-              global.addDebugLog({ event: 'flow_error', instance: this.instanceName, error: err.message })
-            }
-          })
+            processMessage({
+              instanceRemoteId: this.instanceId,
+              fromJid: rawJid,
+              userText: text,
+              socket: this.socket,
+            }).then(() => {
+              if (typeof global.addDebugLog === 'function') {
+                global.addDebugLog({ event: 'flow_done', instance: this.instanceName, fromJid: rawJid })
+              }
+            }).catch(err => {
+              console.error(`[${this.instanceName}] Erro no executor:`, err.message)
+              if (typeof global.addDebugLog === 'function') {
+                global.addDebugLog({ event: 'flow_error', instance: this.instanceName, error: err.message })
+              }
+            })
+          }, 600)
         }
       })
 
@@ -183,13 +182,23 @@ class WAConnection {
     }
   }
 
+  async _typing(jid, ms = 1200) {
+    try {
+      await this.socket.sendPresenceUpdate('composing', jid)
+      await new Promise(r => setTimeout(r, ms))
+      await this.socket.sendPresenceUpdate('paused', jid)
+    } catch {}
+  }
+
   async enviarTexto(numero, texto) {
     this._verificarConexao()
     const jid = this._formatarJID(numero)
-    console.log(`[${this.instanceName}] ENVIAR → jid=${jid} texto="${texto.slice(0,50)}"`)
     if (typeof global.addDebugLog === 'function') {
       global.addDebugLog({ event: 'send_text', instance: this.instanceName, to_jid: jid, text: texto.slice(0, 80) })
     }
+    // Typing indicator proporcional ao tamanho da mensagem (máx 3s)
+    const typingMs = Math.min(800 + texto.length * 20, 3000)
+    await this._typing(jid, typingMs)
     await this.socket.sendMessage(jid, { text: texto })
     await this._salvarMensagem(numero, 'text', texto)
   }

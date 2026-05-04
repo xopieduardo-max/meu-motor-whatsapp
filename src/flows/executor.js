@@ -230,12 +230,24 @@ async function processMessage({ instanceRemoteId, fromJid, userText }) {
   log(`instância ok: id=${inst.id} user=${inst.user_id}`)
 
   // 2. Sessão ativa
-  const { data: session } = await db.from('flow_sessions').select('*')
+  let { data: session } = await db.from('flow_sessions').select('*')
     .eq('instance_id', inst.id).eq('contact_phone', phone).eq('status', 'active').maybeSingle()
 
   // 3. Busca fluxos ativos
   const { data: allFlows } = await db.from('flows').select('*').eq('user_id', inst.user_id).eq('status', 'active')
   const instFlows = (allFlows ?? []).filter(f => !f.instance_id || f.instance_id === inst.id)
+
+  // Expira sessão por inatividade (usa restart_policy do fluxo ou padrão 60 min)
+  if (session) {
+    const sessionFlow = instFlows.find(f => f.id === session.flow_id)
+    const policy = sessionFlow?.restart_policy || { mode: 'always', cooldown_minutes: 60 }
+    const minutesSinceActivity = (Date.now() - new Date(session.updated_at).getTime()) / 60000
+    if (policy.mode === 'always' || (policy.mode === 'cooldown' && minutesSinceActivity > (policy.cooldown_minutes || 60))) {
+      log(`Sessão expirada (${Math.round(minutesSinceActivity)} min) — reiniciando fluxo`)
+      await db.from('flow_sessions').update({ status: 'ended', updated_at: new Date().toISOString() }).eq('id', session.id)
+      session = null
+    }
+  }
 
   const txtLower = userText.toLowerCase()
   const keywordMatch = instFlows.find(f => {
@@ -244,7 +256,6 @@ async function processMessage({ instanceRemoteId, fromJid, userText }) {
       const rawWord = (typeof k === 'string' ? k : k?.word ?? '').toLowerCase().trim()
       if (!rawWord) return false
       const exact = typeof k === 'object' && k?.mode === 'exact'
-      // Suporta lista separada por vírgula dentro de um único item
       const words = rawWord.split(',').map(w => w.trim()).filter(Boolean)
       return words.some(word => exact ? txtLower === word : txtLower.includes(word))
     })
@@ -253,8 +264,10 @@ async function processMessage({ instanceRemoteId, fromJid, userText }) {
   let flow = null
   if (keywordMatch) {
     flow = keywordMatch
-    if (session && session.flow_id !== flow.id) {
+    // Keyword sempre reinicia — encerra qualquer sessão ativa
+    if (session) {
       await db.from('flow_sessions').update({ status: 'ended', updated_at: new Date().toISOString() }).eq('id', session.id)
+      session = null
     }
   } else if (session) {
     const { data: f } = await db.from('flows').select('*').eq('id', session.flow_id).maybeSingle()
@@ -267,7 +280,8 @@ async function processMessage({ instanceRemoteId, fromJid, userText }) {
   if (!flow) { log(`nenhum fluxo ativo para: ${phone}`); return }
   log(`fluxo: ${flow.name} (${flow.id})`)
 
-  const useSession = (!keywordMatch || (session && session.flow_id === flow.id)) ? session : null
+  // Se keyword disparou, session já foi zerada acima → useSession sempre null nesse caso
+  const useSession = session
 
   const nodes = flow.nodes ?? []
   const edges = flow.edges ?? []
