@@ -214,10 +214,12 @@ async function processMessage({ instanceRemoteId, fromJid, userText }) {
   const keywordMatch = instFlows.find(f => {
     const kws = Array.isArray(f.keywords) ? f.keywords : []
     return kws.some(k => {
-      const word = (typeof k === 'string' ? k : k?.word ?? '').toLowerCase().trim()
-      if (!word) return false
+      const rawWord = (typeof k === 'string' ? k : k?.word ?? '').toLowerCase().trim()
+      if (!rawWord) return false
       const exact = typeof k === 'object' && k?.mode === 'exact'
-      return exact ? txtLower === word : txtLower.includes(word)
+      // Suporta lista separada por vírgula dentro de um único item
+      const words = rawWord.split(',').map(w => w.trim()).filter(Boolean)
+      return words.some(word => exact ? txtLower === word : txtLower.includes(word))
     })
   })
 
