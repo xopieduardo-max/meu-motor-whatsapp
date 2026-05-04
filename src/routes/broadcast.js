@@ -2,6 +2,23 @@ const router = require('express').Router()
 const manager = require('../whatsapp/manager')
 const { getClient } = require('../lib/app-supabase')
 
+// Broadcasts cancelados (em memória — suficiente para o Railway)
+const cancelledBroadcasts = new Set()
+
+// POST /broadcast/cancel/:broadcastId
+router.post('/cancel/:broadcastId', async (req, res) => {
+  const { broadcastId } = req.params
+  cancelledBroadcasts.add(broadcastId)
+  const db = getClient()
+  if (db) {
+    await db.from('broadcasts').update({ status: 'cancelled' }).eq('id', broadcastId)
+    await db.from('broadcast_recipients')
+      .update({ status: 'cancelled' })
+      .eq('broadcast_id', broadcastId).eq('status', 'pending')
+  }
+  res.json({ ok: true, message: 'Disparo cancelado' })
+})
+
 // POST /broadcast
 router.post('/', async (req, res) => {
   try {
@@ -60,6 +77,12 @@ router.post('/', async (req, res) => {
           await db.from('broadcast_recipients')
             .update({ status: success ? 'sent' : 'failed', error: errMsg, sent_at: success ? new Date().toISOString() : null })
             .eq('broadcast_id', broadcastId).eq('phone', String(to)).eq('status', 'pending')
+        }
+
+        // Verifica cancelamento antes do próximo envio
+        if (cancelledBroadcasts.has(broadcastId)) {
+          console.log(`[broadcast ${broadcastId}] Cancelado pelo usuário`)
+          break
         }
 
         await new Promise(r => setTimeout(r, delayMs))
