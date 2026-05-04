@@ -88,18 +88,27 @@ router.post('/:id/reconnect', async (req, res) => {
   }
 })
 
-// Listar grupos do WhatsApp de uma instância
+// Listar grupos do WhatsApp com foto de perfil
 router.get('/:id/groups', async (req, res) => {
   try {
     const conn = manager.obterConexao(req.params.id)
     if (!conn) return res.status(404).json({ error: 'Instância não encontrada' })
     const raw = await conn.socket.groupFetchAllParticipating()
-    const groups = Object.entries(raw || {}).map(([jid, g]) => ({
-      id: jid,
-      name: g.subject || jid,
-      participants: Array.isArray(g.participants) ? g.participants.length : 0,
+    const entries = Object.entries(raw || {})
+
+    // Busca fotos em paralelo (ignora erros)
+    const groups = await Promise.all(entries.map(async ([jid, g]) => {
+      let photo = null
+      try { photo = await conn.socket.profilePictureUrl(jid, 'image') } catch {}
+      return {
+        id: jid,
+        name: g.subject || jid,
+        participants: Array.isArray(g.participants) ? g.participants.length : 0,
+        photo,
+      }
     }))
-    res.json({ groups })
+
+    res.json({ groups: groups.sort((a, b) => a.name.localeCompare(b.name)) })
   } catch (err) {
     res.status(500).json({ error: err.message })
   }

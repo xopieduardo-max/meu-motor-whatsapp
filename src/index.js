@@ -26,7 +26,7 @@ app.get('/', (req, res) => {
   res.json({
     status: 'online',
     name: 'Motor WhatsApp - Eduardo',
-    version: '2.4.0',
+    version: '2.5.0',
     webhook_configured: !!process.env.WEBHOOK_URL,
     webhook_url: process.env.WEBHOOK_URL || null,
     timestamp: new Date().toISOString()
