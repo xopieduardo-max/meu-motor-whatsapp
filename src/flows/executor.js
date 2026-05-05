@@ -127,8 +127,16 @@ async function runFlow(opts) {
     if (t === 'start') { cur = nextNode(edges, cur, null); continue }
 
     if (t === 'text') {
-      const msgs = Array.isArray(d.messages) && d.messages.length ? d.messages : (d.text ? [d.text] : [])
-      for (const m of msgs) await sendMsg(instanceId, phone, interpolate(m, vars))
+      // Variações aleatórias: se o nó tem "variations", sorteia uma
+      if (Array.isArray(d.variations) && d.variations.length > 0) {
+        const idx = Math.floor(Math.random() * d.variations.length)
+        const chosen = d.variations[idx]
+        if (chosen) await sendMsg(instanceId, phone, interpolate(chosen, vars))
+      } else {
+        // Comportamento padrão: envia todas as mensagens em sequência
+        const msgs = Array.isArray(d.messages) && d.messages.length ? d.messages : (d.text ? [d.text] : [])
+        for (const m of msgs) await sendMsg(instanceId, phone, interpolate(m, vars))
+      }
       cur = nextNode(edges, cur, null); continue
     }
 
