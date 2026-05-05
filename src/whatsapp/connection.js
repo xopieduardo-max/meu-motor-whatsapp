@@ -147,6 +147,12 @@ class WAConnection {
           // Marca mensagem como lida
           try { await this.socket.readMessages([msg.key]) } catch {}
 
+          // Salva mensagem recebida no inbox da plataforma
+          this._saveInboxMessage({
+            phone: rawJid, phoneName: msg.pushName || from,
+            direction: 'in', type: 'text', content: text,
+          }).catch(() => {})
+
           // Anti-flooding: debounce de 600ms por contato
           const debounceKey = `${this.instanceId}:${from}`
           if (this._debounce[debounceKey]) clearTimeout(this._debounce[debounceKey])
@@ -182,6 +188,30 @@ class WAConnection {
     }
   }
 
+  // Salva mensagem no inbox da plataforma (Supabase)
+  async _saveInboxMessage({ phone, phoneName, direction, type = 'text', content, mediaUrl }) {
+    try {
+      const { getClient } = require('../lib/app-supabase')
+      const db = getClient()
+      if (!db) return
+      const supabase = require('../lib/supabase')
+      // Busca instance_id e user_id na plataforma
+      const { data: inst } = await db.from('instances').select('id, user_id').eq('remote_id', this.instanceId).maybeSingle()
+      if (!inst) return
+      // Upsert contato
+      await db.from('contacts').upsert({
+        user_id: inst.user_id, phone, name: phoneName || phone,
+        last_contact: new Date().toISOString(),
+      }, { onConflict: 'user_id,phone' })
+      // Insere mensagem
+      await db.from('messages').insert({
+        user_id: inst.user_id, instance_id: inst.id,
+        contact_phone: phone, contact_name: phoneName || phone,
+        direction, type, content: content || null, media_url: mediaUrl || null,
+      })
+    } catch (e) { /* ignora erros silenciosamente */ }
+  }
+
   async _typing(jid, ms = 1200) {
     try {
       await this.socket.sendPresenceUpdate('composing', jid)
@@ -201,6 +231,7 @@ class WAConnection {
     await this._typing(jid, typingMs)
     await this.socket.sendMessage(jid, { text: texto })
     await this._salvarMensagem(numero, 'text', texto)
+    this._saveInboxMessage({ phone: jid, direction: 'out', type: 'text', content: texto }).catch(() => {})
   }
 
   async enviarImagem(numero, url, legenda = '') {
