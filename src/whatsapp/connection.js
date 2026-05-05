@@ -301,7 +301,7 @@ class WAConnection {
     await this._salvarMensagem(numero, 'image', url)
   }
 
-  async enviarPDF(numero, url, nomeArquivo = 'documento.pdf') {
+  async enviarPDF(numero, url, nomeArquivo = 'documento.pdf', caption = '') {
     this._verificarConexao()
     const jid = this._formatarJID(numero)
     const res = await fetch(url)
@@ -309,7 +309,8 @@ class WAConnection {
     await this.socket.sendMessage(jid, {
       document: buffer,
       mimetype: 'application/pdf',
-      fileName: nomeArquivo
+      fileName: nomeArquivo,
+      ...(caption ? { caption } : {}),
     })
     await this._salvarMensagem(numero, 'document', url)
   }
