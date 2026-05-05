@@ -88,6 +88,20 @@ router.post('/:id/reconnect', async (req, res) => {
   }
 })
 
+// Foto de perfil de um contato
+router.get('/:id/profile-pic', async (req, res) => {
+  try {
+    const conn = manager.obterConexao(req.params.id)
+    if (!conn) return res.status(404).json({ error: 'Instância não encontrada' })
+    const phone = req.query.phone || ''
+    const jid = String(phone).replace(/@.*$/, '').replace(/\D/g, '') + '@s.whatsapp.net'
+    const url = await conn.socket.profilePictureUrl(jid, 'image').catch(() => null)
+    res.json({ url })
+  } catch (err) {
+    res.json({ url: null })
+  }
+})
+
 // Buscar e salvar chats recentes no inbox da plataforma
 router.post('/:id/sync-inbox', async (req, res) => {
   try {

@@ -229,11 +229,19 @@ async function processMessage({ instanceRemoteId, fromJid, userText }) {
   if (!inst) { log(`instância não encontrada: ${instanceRemoteId}`); return }
   log(`instância ok: id=${inst.id} user=${inst.user_id}`)
 
-  // 2. Sessão ativa
+  // 2. Verifica se automação está pausada para este contato
+  const { data: contactRecord } = await db.from('contacts').select('automation_paused')
+    .eq('user_id', inst.user_id).eq('phone', phone).maybeSingle()
+  if (contactRecord?.automation_paused) {
+    log(`Automação pausada para ${phone} — mensagem salva no inbox, fluxo não executado`)
+    return
+  }
+
+  // 3. Sessão ativa
   let { data: session } = await db.from('flow_sessions').select('*')
     .eq('instance_id', inst.id).eq('contact_phone', phone).eq('status', 'active').maybeSingle()
 
-  // 3. Busca fluxos ativos
+  // 4. Busca fluxos ativos
   const { data: allFlows } = await db.from('flows').select('*').eq('user_id', inst.user_id).eq('status', 'active')
   const instFlows = (allFlows ?? []).filter(f => !f.instance_id || f.instance_id === inst.id)
 
