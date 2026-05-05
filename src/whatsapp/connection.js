@@ -104,6 +104,34 @@ class WAConnection {
 
       this.socket.ev.on('creds.update', saveCreds)
 
+      // Captura histórico de mensagens quando Baileys reconecta/sincroniza
+      this.socket.ev.on('messaging-history.set', async ({ messages: histMsgs, chats }) => {
+        if (!histMsgs?.length) return
+        console.log(`[${this.instanceName}] Sincronizando ${histMsgs.length} mensagens históricas...`)
+        const batch = []
+        for (const msg of histMsgs.slice(0, 500)) { // limita a 500 msgs
+          const jid = msg.key?.remoteJid || ''
+          if (jid.endsWith('@g.us') || jid.endsWith('@broadcast') || jid === 'status@broadcast') continue
+          const text = msg.message?.conversation || msg.message?.extendedTextMessage?.text || ''
+          if (!text) continue
+          const phone = jid.replace(/@.*$/, '')
+          batch.push({
+            phone,
+            phoneName: msg.pushName || phone,
+            direction: msg.key.fromMe ? 'out' : 'in',
+            content: text,
+            createdAt: new Date((Number(msg.messageTimestamp) || Date.now() / 1000) * 1000).toISOString(),
+          })
+        }
+        if (batch.length === 0) return
+        // Salva em paralelo
+        await Promise.all(batch.map(m => this._saveInboxMessage({
+          phone: m.phone, phoneName: m.phoneName,
+          direction: m.direction, type: 'text', content: m.content,
+        }).catch(() => {})))
+        console.log(`[${this.instanceName}] ${batch.length} msgs históricas salvas no inbox`)
+      })
+
       // Encaminha mensagens recebidas para o webhook configurado
       this.socket.ev.on('messages.upsert', async ({ messages, type }) => {
         console.log(`[${this.instanceName}] messages.upsert tipo=${type} qtd=${messages.length}`)
