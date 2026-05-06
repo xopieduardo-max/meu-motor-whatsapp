@@ -49,34 +49,60 @@ router.post('/', async (req, res) => {
 
     res.json({ ok: true, total: recipients.length })
 
+    // Delay extra para grupos (JIDs com @g.us) — WhatsApp é mais rigoroso
+    const isGroupBroadcast = recipients.some(r => String(r).includes('@g.us'))
+    const effectiveDelay = isGroupBroadcast ? Math.max(delayMs, 5000) : delayMs
+
     ;(async () => {
       for (const to of recipients) {
         let success = false
         let errMsg = null
-        try {
-          if (flowId) {
-            const { processMessage } = require('../flows/executor')
-            await processMessage({ instanceRemoteId: instanceId, fromJid: to, userText: '' })
-          } else if (mediaType === 'image' && mediaUrl) {
-            await conn.enviarImagem(to, mediaUrl, message || '')
-          } else if (mediaType === 'audio' && mediaUrl) {
-            await conn.enviarAudio(to, mediaUrl)
-          } else if (mediaType === 'pdf' && mediaUrl) {
-            await conn.enviarPDF(to, mediaUrl)
-          } else if (message) {
-            await conn.enviarTexto(to, message)
+
+        // Pula JIDs inválidos
+        const toStr = String(to)
+        if (!toStr || toStr === 'undefined' || toStr === 'null') continue
+
+        // Tenta enviar com 2 retentativas automáticas para rate-limit
+        for (let attempt = 1; attempt <= 3; attempt++) {
+          try {
+            if (flowId) {
+              const { processMessage } = require('../flows/executor')
+              await processMessage({ instanceRemoteId: instanceId, fromJid: toStr, userText: '' })
+            } else if (mediaType === 'image' && mediaUrl) {
+              await conn.enviarImagem(toStr, mediaUrl, message || '')
+            } else if (mediaType === 'audio' && mediaUrl) {
+              await conn.enviarAudio(toStr, mediaUrl)
+            } else if (mediaType === 'pdf' && mediaUrl) {
+              await conn.enviarPDF(toStr, mediaUrl)
+            } else if (message) {
+              await conn.enviarTexto(toStr, message)
+            }
+            success = true
+            errMsg = null
+            break // sucesso — sai do loop de tentativas
+          } catch (e) {
+            errMsg = e.message
+            const isRateLimit = e.message?.includes('rate') || e.message?.includes('Rate') || e.message?.includes('limit')
+            const isNoSession = e.message?.includes('session') || e.message?.includes('Session')
+            console.error(`[broadcast] Tentativa ${attempt}/3 falhou em ${toStr}:`, e.message)
+
+            if (isNoSession) break // grupo inválido — não adianta tentar de novo
+
+            if (isRateLimit && attempt < 3) {
+              const waitMs = attempt * 30000 // 30s, 60s
+              console.log(`[broadcast] Rate limit — aguardando ${waitMs/1000}s antes de tentar novamente...`)
+              await new Promise(r => setTimeout(r, waitMs))
+            } else if (attempt < 3) {
+              await new Promise(r => setTimeout(r, 5000)) // espera 5s para outros erros
+            }
           }
-          success = true
-        } catch (e) {
-          errMsg = e.message
-          console.error(`[broadcast] Erro em ${to}:`, e.message)
         }
 
         // Atualiza status individual
         if (broadcastId && db) {
           await db.from('broadcast_recipients')
             .update({ status: success ? 'sent' : 'failed', error: errMsg, sent_at: success ? new Date().toISOString() : null })
-            .eq('broadcast_id', broadcastId).eq('phone', String(to)).eq('status', 'pending')
+            .eq('broadcast_id', broadcastId).eq('phone', toStr).eq('status', 'pending')
         }
 
         // Verifica cancelamento antes do próximo envio
@@ -85,7 +111,7 @@ router.post('/', async (req, res) => {
           break
         }
 
-        await new Promise(r => setTimeout(r, delayMs))
+        await new Promise(r => setTimeout(r, effectiveDelay))
       }
 
       // Atualiza status do broadcast principal
