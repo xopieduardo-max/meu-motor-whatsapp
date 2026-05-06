@@ -144,10 +144,12 @@ router.post('/resend/:broadcastId', async (req, res) => {
     const conn = manager.obterConexao(instanceId)
     if (!conn) return res.status(404).json({ error: 'Instância não encontrada' })
 
-    // Busca destinatários que falharam
-    const { data: failed } = await db.from('broadcast_recipients')
+    // Busca destinatários que falharam — exclui "No sessions" (grupos inválidos, não adianta retentar)
+    const { data: allFailed } = await db.from('broadcast_recipients')
       .select('*').eq('broadcast_id', broadcastId).eq('status', 'failed')
-    if (!failed?.length) return res.json({ ok: true, resending: 0, message: 'Nenhuma falha para reenviar' })
+    const failed = (allFailed ?? []).filter(r => !r.error?.toLowerCase().includes('session'))
+    const skipped = (allFailed ?? []).length - failed.length
+    if (!failed?.length) return res.json({ ok: true, resending: 0, skipped, message: skipped > 0 ? `${skipped} grupo(s) inválidos ignorados (No sessions)` : 'Nenhuma falha para reenviar' })
 
     res.json({ ok: true, resending: failed.length })
 
