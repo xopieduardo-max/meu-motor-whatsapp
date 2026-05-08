@@ -352,7 +352,7 @@ async function processMessage({ instanceRemoteId, fromJid, userText }) {
       user_id: inst.user_id, instance_id: inst.id, flow_id: flow.id,
       contact_phone: phone, event_type: 'conversation_started',
       metadata: { text: userText.slice(0, 200) },
-    }).catch(() => {})
+    }).then(null, () => {})
   }
 
   let result = await runFlow({ nodes, edges, startId, instanceId: inst.remote_id, phone, variables, userId: inst.user_id })
@@ -390,7 +390,7 @@ async function processMessage({ instanceRemoteId, fromJid, userText }) {
       user_id: inst.user_id, instance_id: inst.id, flow_id: activeFlowId,
       contact_phone: phone, event_type: 'conversation_completed',
       metadata: {},
-    }).catch(() => {})
+    }).then(null, () => {})
 
     // Captura de lead se respondeu o nome
     if (name) {
@@ -398,7 +398,7 @@ async function processMessage({ instanceRemoteId, fromJid, userText }) {
         user_id: inst.user_id, instance_id: inst.id, flow_id: activeFlowId,
         contact_phone: phone, event_type: 'lead_captured',
         metadata: { field: 'nome', value: name },
-      }).catch(() => {})
+      }).then(null, () => {})
     }
   }
 }
