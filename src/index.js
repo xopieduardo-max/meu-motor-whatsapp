@@ -6,6 +6,7 @@ const manager = require('./whatsapp/manager')
 const instanceRoutes = require('./routes/instance')
 const messageRoutes = require('./routes/message')
 const broadcastRoutes = require('./routes/broadcast')
+const triggerRoutes = require('./routes/trigger')
 const { iniciarJobLembretes } = require('./flows/reminder')
 
 const app = express()
@@ -26,7 +27,7 @@ app.get('/', (req, res) => {
   res.json({
     status: 'online',
     name: 'Motor WhatsApp - Eduardo',
-    version: '3.1.1',
+    version: '3.1.2',
     webhook_configured: !!process.env.WEBHOOK_URL,
     webhook_url: process.env.WEBHOOK_URL || null,
     timestamp: new Date().toISOString()
@@ -58,6 +59,7 @@ app.get('/health', (req, res) => {
 app.use('/instance', instanceRoutes)
 app.use('/message', messageRoutes)
 app.use('/broadcast', broadcastRoutes)
+app.use('/trigger', triggerRoutes)
 
 // Iniciar servidor
 app.listen(PORT, async () => {
