@@ -346,6 +346,15 @@ async function processMessage({ instanceRemoteId, fromJid, userText }) {
     variables = { last_message: userText }
   }
 
+  // Registra início da conversa (nova sessão)
+  if (!useSession) {
+    db.from('flow_events').insert({
+      user_id: inst.user_id, instance_id: inst.id, flow_id: flow.id,
+      contact_phone: phone, event_type: 'conversation_started',
+      metadata: { text: userText.slice(0, 200) },
+    }).catch(() => {})
+  }
+
   let result = await runFlow({ nodes, edges, startId, instanceId: inst.remote_id, phone, variables, userId: inst.user_id })
 
   // Cross-flow goto
@@ -367,12 +376,30 @@ async function processMessage({ instanceRemoteId, fromJid, userText }) {
 
   await updateSession(db, useSession, activeFlowId, result, inst, phone)
 
-  // Atualiza contato
+  // Registra conclusão e captura de lead
   if (result.ended) {
+    const name = String(result.variables.nome ?? result.variables.name ?? '').trim()
     try {
-      const name = String(result.variables.nome ?? result.variables.name ?? '').trim() || phone
-      await db.from('contacts').upsert({ user_id: inst.user_id, phone, name, last_contact: new Date().toISOString() }, { onConflict: 'user_id,phone' })
+      await db.from('contacts').upsert({
+        user_id: inst.user_id, phone, name: name || phone,
+        last_contact: new Date().toISOString(),
+      }, { onConflict: 'user_id,phone' })
     } catch { /* ignora */ }
+
+    db.from('flow_events').insert({
+      user_id: inst.user_id, instance_id: inst.id, flow_id: activeFlowId,
+      contact_phone: phone, event_type: 'conversation_completed',
+      metadata: {},
+    }).catch(() => {})
+
+    // Captura de lead se respondeu o nome
+    if (name) {
+      db.from('flow_events').insert({
+        user_id: inst.user_id, instance_id: inst.id, flow_id: activeFlowId,
+        contact_phone: phone, event_type: 'lead_captured',
+        metadata: { field: 'nome', value: name },
+      }).catch(() => {})
+    }
   }
 }
 
