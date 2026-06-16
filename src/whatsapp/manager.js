@@ -6,13 +6,13 @@ const conexoes = {}
 
 async function iniciarTodasInstancias() {
   const { data: instancias } = await supabase
-    .from('instances').select('*')
+    .from('instances').select('*').not('remote_id', 'is', null)
 
   if (!instancias?.length) return
 
   console.log(`Iniciando ${instancias.length} instância(s) salvas...`)
   for (const inst of instancias) {
-    await conectarInstancia(inst.id, inst.name)
+    await conectarInstancia(inst.remote_id, inst.name)
   }
 }
 

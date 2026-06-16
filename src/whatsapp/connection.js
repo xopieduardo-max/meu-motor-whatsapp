@@ -337,9 +337,11 @@ class WAConnection {
   }
 
   async _salvarStatus(status, phone = null) {
-    const update = { status, updated_at: new Date().toISOString() }
-    if (phone) update.phone = phone
-    await supabase.from('instances').update(update).eq('id', this.instanceId)
+    try {
+      const update = { status, updated_at: new Date().toISOString() }
+      if (phone) update.phone = phone
+      await supabase.from('instances').update(update).eq('remote_id', this.instanceId)
+    } catch {}
   }
 
   async _salvarMensagem(numero, tipo, conteudo) {

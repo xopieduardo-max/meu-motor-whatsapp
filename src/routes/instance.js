@@ -9,7 +9,7 @@ router.get('/', async (req, res) => {
     const ativas = manager.listarConexoes()
 
     const resultado = (data || []).map(inst => {
-      const ativa = ativas.find(c => c.id === inst.id)
+      const ativa = ativas.find(c => c.id === inst.remote_id)
       return {
         ...inst,
         status: ativa?.status || inst.status,
@@ -26,20 +26,15 @@ router.get('/', async (req, res) => {
 // Criar nova instância
 router.post('/create', async (req, res) => {
   try {
-    const { name, user_id } = req.body
+    const { name } = req.body
     if (!name) return res.status(400).json({ error: 'Nome é obrigatório' })
 
-    const record = { name, status: 'connecting' }
-    if (user_id) record.user_id = user_id
+    const { randomUUID } = require('crypto')
+    const instanceId = randomUUID()
 
-    const { data, error } = await supabase
-      .from('instances').insert(record).select().single()
+    await manager.conectarInstancia(instanceId, name)
 
-    if (error) throw error
-
-    await manager.conectarInstancia(data.id, data.name)
-
-    res.json({ success: true, instance: data })
+    res.json({ success: true, instance: { id: instanceId, name } })
   } catch (err) {
     res.status(500).json({ error: err.message })
   }
@@ -65,7 +60,7 @@ router.get('/:id/qr', async (req, res) => {
 router.get('/:id/status', async (req, res) => {
   try {
     const conn = manager.obterConexao(req.params.id)
-    const { data } = await supabase.from('instances').select('*').eq('id', req.params.id).single()
+    const { data } = await supabase.from('instances').select('*').eq('remote_id', req.params.id).maybeSingle()
 
     res.json({
       instanceId: req.params.id,
@@ -81,10 +76,10 @@ router.get('/:id/status', async (req, res) => {
 // Reconectar instância
 router.post('/:id/reconnect', async (req, res) => {
   try {
-    const { data } = await supabase.from('instances').select('*').eq('id', req.params.id).single()
+    const { data } = await supabase.from('instances').select('*').eq('remote_id', req.params.id).maybeSingle()
     if (!data) return res.status(404).json({ error: 'Instância não encontrada' })
 
-    await manager.conectarInstancia(data.id, data.name)
+    await manager.conectarInstancia(req.params.id, data.name)
     res.json({ success: true, message: 'Reconectando...' })
   } catch (err) {
     res.status(500).json({ error: err.message })
