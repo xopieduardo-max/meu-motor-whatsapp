@@ -64,7 +64,6 @@ class WAConnection {
         keepAliveIntervalMs: 25000,
         retryRequestDelayMs: 2000,
         syncFullHistory: false,
-        fireInitQueries: false,
       })
 
       this.socket.ev.on('connection.update', async (update) => {
