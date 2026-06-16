@@ -81,18 +81,24 @@ class WAConnection {
           const codigo = boomErr?.output?.statusCode
           const errMsg = lastDisconnect?.error?.message || boomErr?.message || ''
           const deslogado = codigo === DisconnectReason.loggedOut
+          const qrExpirou = codigo === 408 || (errMsg && errMsg.toLowerCase().includes('qr'))
 
           this.status = 'disconnected'
           this.qrBase64 = null
           await this._salvarStatus('disconnected')
           console.log(`[${this.instanceName}] Desconectado. Código: ${codigo} | Msg: ${errMsg}`)
 
-          if (!deslogado) {
-            console.log(`[${this.instanceName}] Reconectando em 3s...`)
-            setTimeout(() => this.connect(), 3000)
-          } else {
+          if (deslogado) {
             console.log(`[${this.instanceName}] Deslogado permanentemente.`)
             await this._limparCredenciais()
+          } else if (qrExpirou) {
+            // QR expirou — aguarda 15s antes de gerar novo para não sofrer rate limit do WhatsApp
+            const delay = 15000
+            console.log(`[${this.instanceName}] QR expirou/rejeitado. Aguardando ${delay/1000}s para novo QR...`)
+            setTimeout(() => this.connect(), delay)
+          } else {
+            console.log(`[${this.instanceName}] Reconectando em 5s...`)
+            setTimeout(() => this.connect(), 5000)
           }
         }
 
