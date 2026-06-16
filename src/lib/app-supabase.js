@@ -4,10 +4,10 @@ let _client = null
 
 function getClient() {
   if (_client) return _client
-  const url = process.env.APP_SUPABASE_URL
-  const key = process.env.APP_SUPABASE_ANON_KEY
+  const url = process.env.APP_SUPABASE_URL || process.env.SUPABASE_URL
+  const key = process.env.APP_SUPABASE_ANON_KEY || process.env.SUPABASE_PUBLISHABLE_KEY
   if (!url || !key) {
-    console.warn('[app-supabase] APP_SUPABASE_URL ou APP_SUPABASE_ANON_KEY não configuradas — client desativado')
+    console.warn('[app-supabase] Supabase não configurado — client desativado')
     return null
   }
   console.log('[app-supabase] conectando a:', url.slice(0, 40))
