@@ -26,11 +26,14 @@ router.get('/', async (req, res) => {
 // Criar nova instância
 router.post('/create', async (req, res) => {
   try {
-    const { name } = req.body
+    const { name, user_id } = req.body
     if (!name) return res.status(400).json({ error: 'Nome é obrigatório' })
 
+    const record = { name, status: 'connecting' }
+    if (user_id) record.user_id = user_id
+
     const { data, error } = await supabase
-      .from('instances').insert({ name, status: 'connecting' }).select().single()
+      .from('instances').insert(record).select().single()
 
     if (error) throw error
 
