@@ -93,6 +93,7 @@ router.get('/:id/profile-pic', async (req, res) => {
   try {
     const conn = manager.obterConexao(req.params.id)
     if (!conn) return res.status(404).json({ error: 'Instância não encontrada' })
+    if (!conn.socket) return res.status(400).json({ error: 'WhatsApp não está conectado' })
     const phone = req.query.phone || ''
     const jid = String(phone).replace(/@.*$/, '').replace(/\D/g, '') + '@s.whatsapp.net'
     const url = await conn.socket.profilePictureUrl(jid, 'image').catch(() => null)
@@ -127,6 +128,7 @@ router.get('/:id/groups', async (req, res) => {
   try {
     const conn = manager.obterConexao(req.params.id)
     if (!conn) return res.status(404).json({ error: 'Instância não encontrada' })
+    if (!conn.socket) return res.status(400).json({ error: 'WhatsApp não está conectado' })
     const raw = await conn.socket.groupFetchAllParticipating()
     const entries = Object.entries(raw || {})
 

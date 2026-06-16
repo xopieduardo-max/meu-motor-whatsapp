@@ -262,13 +262,6 @@ class WAConnection {
     this._saveInboxMessage({ phone: jid, direction: 'out', type: 'text', content: texto }).catch(() => {})
   }
 
-  async enviarImagem(numero, url, legenda = '') {
-    this._verificarConexao()
-    const jid = this._formatarJID(numero)
-    await this.socket.sendMessage(jid, { image: { url }, caption: legenda })
-    await this._salvarMensagem(numero, 'image', url)
-  }
-
   async enviarAudio(numero, url) {
     this._verificarConexao()
     const jid = this._formatarJID(numero)
@@ -317,6 +310,9 @@ class WAConnection {
 
 
   desconectar() {
+    // Cancela todos os debounces pendentes antes de fechar o socket
+    Object.values(this._debounce).forEach(clearTimeout)
+    this._debounce = {}
     if (this.socket) {
       this.socket.end()
       this.socket = null

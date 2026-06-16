@@ -105,13 +105,19 @@ router.post('/', async (req, res) => {
             .eq('broadcast_id', broadcastId).eq('phone', toStr).eq('status', 'pending')
         }
 
-        // Verifica cancelamento antes do próximo envio
-        if (cancelledBroadcasts.has(broadcastId)) {
+        // Verifica cancelamento e aguarda delay antes do próximo envio
+        if (broadcastId && cancelledBroadcasts.has(broadcastId)) {
           console.log(`[broadcast ${broadcastId}] Cancelado pelo usuário`)
           break
         }
 
         await new Promise(r => setTimeout(r, effectiveDelay))
+
+        // Verifica novamente após o delay (pode ter sido cancelado durante a espera)
+        if (broadcastId && cancelledBroadcasts.has(broadcastId)) {
+          console.log(`[broadcast ${broadcastId}] Cancelado durante delay`)
+          break
+        }
       }
 
       // Atualiza status do broadcast principal
@@ -124,6 +130,9 @@ router.post('/', async (req, res) => {
           status: failed === 0 ? 'completed' : failed === all.length ? 'failed' : 'partial'
         }).eq('id', broadcastId)
       }
+
+      // Limpa o ID do Set após concluir para evitar memory leak
+      if (broadcastId) cancelledBroadcasts.delete(broadcastId)
       console.log(`[broadcast ${broadcastId}] Concluído`)
     })()
   } catch (e) {
