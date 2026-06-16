@@ -58,11 +58,13 @@ class WAConnection {
         auth: state,
         logger: pino({ level: 'silent' }),
         printQRInTerminal: false,
-        browser: Browsers.ubuntu('Chrome'),
+        browser: Browsers.macOS('Safari'),
         connectTimeoutMs: 60000,
         defaultQueryTimeoutMs: 60000,
-        keepAliveIntervalMs: 10000,
+        keepAliveIntervalMs: 25000,
         retryRequestDelayMs: 2000,
+        syncFullHistory: false,
+        fireInitQueries: false,
       })
 
       this.socket.ev.on('connection.update', async (update) => {
@@ -76,13 +78,15 @@ class WAConnection {
         }
 
         if (connection === 'close') {
-          const codigo = new Boom(lastDisconnect?.error)?.output?.statusCode
+          const boomErr = new Boom(lastDisconnect?.error)
+          const codigo = boomErr?.output?.statusCode
+          const errMsg = lastDisconnect?.error?.message || boomErr?.message || ''
           const deslogado = codigo === DisconnectReason.loggedOut
 
           this.status = 'disconnected'
           this.qrBase64 = null
           await this._salvarStatus('disconnected')
-          console.log(`[${this.instanceName}] Desconectado. Código: ${codigo}`)
+          console.log(`[${this.instanceName}] Desconectado. Código: ${codigo} | Msg: ${errMsg}`)
 
           if (!deslogado) {
             console.log(`[${this.instanceName}] Reconectando em 3s...`)
