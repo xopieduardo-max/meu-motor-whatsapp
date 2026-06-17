@@ -134,7 +134,7 @@ async function sendMedia(instanceId, phone, type, url, extra) {
 // ── Execução do fluxo ─────────────────────────────────────────────────────────
 
 async function runFlow(opts) {
-  const { nodes, edges, startId, instanceId, phone, variables: initVars, userId } = opts
+  const { nodes, edges, startId, instanceId, phone, variables: initVars, userId, assistantId } = opts
   const vars = { ...initVars }
   let cur = startId
   let safety = 0
@@ -225,11 +225,28 @@ async function runFlow(opts) {
         if (db) {
           const { data: aiCfg } = await db.from('ai_configs').select('api_key, provider').eq('user_id', userId).maybeSingle()
           if (aiCfg?.api_key) {
+            // Monta system prompt: instrução do nó + base de conhecimento do assistente da instância
+            let systemPrompt = d.instructions || 'Você é um assistente útil.'
+            if (assistantId) {
+              const { data: asst } = await db.from('assistants').select('system_prompt, flow_id').eq('id', assistantId).maybeSingle()
+              // Se o nó não tem instrução própria, usa a do assistente
+              if (asst?.system_prompt && !d.instructions) systemPrompt = asst.system_prompt
+              // Carrega base de conhecimento do assistente
+              const { data: kb } = await db.from('knowledge_base').select('title, content').eq('assistant_id', assistantId).limit(30)
+              const kbText = (kb || []).map(k => `## ${k.title}\n${k.content}`).join('\n\n')
+              if (kbText) systemPrompt += `\n\n# Base de conhecimento:\n${kbText}`
+              // Carrega referência do fluxo vinculado ao assistente
+              if (asst?.flow_id) {
+                const { data: linkedFlow } = await db.from('flows').select('nodes').eq('id', asst.flow_id).maybeSingle()
+                const flowCtx = extractFlowContext(linkedFlow?.nodes)
+                if (flowCtx) systemPrompt += `\n\n# Referência do fluxo:\n${flowCtx}`
+              }
+            }
             const { getAIResponse } = require('../lib/ai')
             const reply = await getAIResponse({
               userMessage: vars.last_message || '',
               history: [],
-              systemPrompt: d.instructions || 'Você é um assistente útil.',
+              systemPrompt,
               apiKey: aiCfg.api_key,
               provider: aiCfg.provider || 'openai',
               model: d.model || 'gpt-4o-mini',
@@ -475,7 +492,7 @@ async function processMessage({ instanceRemoteId, fromJid, userText }) {
         const invalidNext = nextNode(edges, useSession.current_node_id, 'opt:invalid')
         if (invalidNext) {
           variables.invalid_answer = userText
-          const result = await runFlow({ nodes, edges, startId: invalidNext, instanceId: inst.remote_id, phone, variables, userId: inst.user_id })
+          const result = await runFlow({ nodes, edges, startId: invalidNext, instanceId: inst.remote_id, phone, variables, userId: inst.user_id, assistantId: inst.assistant_id })
           await updateSession(db, useSession, flow.id, result)
           return
         }
@@ -515,7 +532,7 @@ async function processMessage({ instanceRemoteId, fromJid, userText }) {
     }).then(null, () => {})
   }
 
-  let result = await runFlow({ nodes, edges, startId, instanceId: inst.remote_id, phone, variables, userId: inst.user_id })
+  let result = await runFlow({ nodes, edges, startId, instanceId: inst.remote_id, phone, variables, userId: inst.user_id, assistantId: inst.assistant_id })
 
   // Cross-flow goto
   let activeFlowId = flow.id
@@ -531,7 +548,7 @@ async function processMessage({ instanceRemoteId, fromJid, userText }) {
     const es = nextFlow.edges ?? []
     const startNode = ns.find(n => n.type === 'start') ?? ns[0]
     if (!startNode) break
-    result = await runFlow({ nodes: ns, edges: es, startId: startNode.id, instanceId: inst.remote_id, phone, variables: result.variables, userId: inst.user_id })
+    result = await runFlow({ nodes: ns, edges: es, startId: startNode.id, instanceId: inst.remote_id, phone, variables: result.variables, userId: inst.user_id, assistantId: inst.assistant_id })
   }
 
   await updateSession(db, useSession, activeFlowId, result, inst, phone)
