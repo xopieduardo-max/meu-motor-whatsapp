@@ -314,7 +314,40 @@ async function processMessage({ instanceRemoteId, fromJid, userText }) {
   }
 
   log(`fluxos encontrados: ${instFlows.length} | keywordMatch=${!!keywordMatch} | session=${!!session}`)
-  if (!flow) { log(`nenhum fluxo ativo para: ${phone}`); return }
+  if (!flow) {
+    log(`nenhum fluxo ativo para: ${phone}`)
+    // Fallback IA: responde automaticamente se configurado
+    const { data: aiConfig } = await db.from('ai_configs').select('*').eq('user_id', inst.user_id).maybeSingle()
+    if (aiConfig?.fallback_enabled && aiConfig?.api_key) {
+      try {
+        const { data: kb } = await db.from('knowledge_base').select('title, content').eq('user_id', inst.user_id).limit(30)
+        const kbText = (kb || []).map(k => `## ${k.title}\n${k.content}`).join('\n\n')
+        const { data: msgs } = await db.from('messages')
+          .select('direction, content').eq('instance_id', inst.id).eq('contact_phone', phone)
+          .not('content', 'is', null).order('created_at', { ascending: false }).limit(10)
+        const history = (msgs || []).reverse().slice(0, -1).map(m => ({
+          role: m.direction === 'in' ? 'user' : 'assistant',
+          content: m.content,
+        }))
+        const systemPrompt = (aiConfig.system_prompt || 'Você é um assistente prestativo e gentil.') +
+          (kbText ? `\n\n# Base de conhecimento do negócio:\n${kbText}` : '')
+        const { getAIResponse } = require('../lib/ai')
+        const aiReply = await getAIResponse({
+          userMessage: userText,
+          history,
+          systemPrompt,
+          apiKey: aiConfig.api_key,
+          provider: aiConfig.provider || 'openai',
+          model: aiConfig.model,
+        })
+        if (aiReply) {
+          await sendMsg(instanceRemoteId, phone, aiReply)
+          log(`[IA] respondeu para ${phone} via ${aiConfig.provider}`)
+        }
+      } catch (e) { log(`[IA] Erro: ${e.message}`) }
+    }
+    return
+  }
   log(`fluxo: ${flow.name} (${flow.id})`)
 
   // Se keyword disparou, session já foi zerada acima → useSession sempre null nesse caso
