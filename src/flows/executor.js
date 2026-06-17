@@ -83,6 +83,28 @@ function validateAnswer(validate, text) {
   return true
 }
 
+// ── Extrai contexto textual de um fluxo para a IA ────────────────────────────
+
+function extractFlowContext(nodes) {
+  const lines = []
+  for (const n of (nodes || [])) {
+    const d = n.data || {}
+    if (n.type === 'text') {
+      const msgs = Array.isArray(d.messages) && d.messages.length ? d.messages : (d.text ? [d.text] : [])
+      msgs.forEach(m => m && lines.push(`Mensagem: ${m}`))
+    }
+    if (n.type === 'question' && d.question) lines.push(`Pergunta ao cliente: ${d.question}`)
+    if (n.type === 'buttons') {
+      if (d.text) lines.push(`Menu: ${d.text}`)
+      if (Array.isArray(d.options)) lines.push(`Opções: ${d.options.join(', ')}`)
+    }
+    if (n.type === 'image' && d.url) lines.push(`Imagem disponível: ${d.url}${d.caption ? ` — ${d.caption}` : ''}`)
+    if (n.type === 'audio' && d.url) lines.push(`Áudio disponível: ${d.url}`)
+    if (n.type === 'pdf' && d.url) lines.push(`PDF disponível: ${d.filename || 'arquivo.pdf'} — ${d.url}`)
+  }
+  return lines.join('\n')
+}
+
 // ── Envio via Baileys ─────────────────────────────────────────────────────────
 
 function getConn(instanceId) {
@@ -346,8 +368,31 @@ async function processMessage({ instanceRemoteId, fromJid, userText }) {
     const { data: aiConfig } = await db.from('ai_configs').select('*').eq('user_id', inst.user_id).maybeSingle()
     if (aiConfig?.fallback_enabled && aiConfig?.api_key) {
       try {
-        const { data: kb } = await db.from('knowledge_base').select('title, content').eq('user_id', inst.user_id).limit(30)
+        const assistantId = inst.assistant_id || null
+        let systemPrompt = aiConfig.system_prompt || 'Você é um assistente prestativo e gentil.'
+
+        // Carrega assistente específico da instância (se configurado)
+        if (assistantId) {
+          const { data: asst } = await db.from('assistants').select('*').eq('id', assistantId).maybeSingle()
+          if (asst?.system_prompt) systemPrompt = asst.system_prompt
+
+          // Extrai contexto textual do fluxo vinculado ao assistente
+          if (asst?.flow_id) {
+            const { data: linkedFlow } = await db.from('flows').select('nodes').eq('id', asst.flow_id).maybeSingle()
+            const flowCtx = extractFlowContext(linkedFlow?.nodes)
+            if (flowCtx) systemPrompt += `\n\n# Referência do fluxo:\n${flowCtx}`
+          }
+        }
+
+        // Carrega base de conhecimento do assistente (ou global se sem assistente)
+        let kbQuery = db.from('knowledge_base').select('title, content').eq('user_id', inst.user_id)
+        if (assistantId) kbQuery = kbQuery.eq('assistant_id', assistantId)
+        else kbQuery = kbQuery.is('assistant_id', null)
+        const { data: kb } = await kbQuery.limit(30)
         const kbText = (kb || []).map(k => `## ${k.title}\n${k.content}`).join('\n\n')
+        if (kbText) systemPrompt += `\n\n# Base de conhecimento:\n${kbText}`
+
+        // Histórico da conversa (últimas 10 msgs)
         const { data: msgs } = await db.from('messages')
           .select('direction, content').eq('instance_id', inst.id).eq('contact_phone', phone)
           .not('content', 'is', null).order('created_at', { ascending: false }).limit(10)
@@ -355,8 +400,7 @@ async function processMessage({ instanceRemoteId, fromJid, userText }) {
           role: m.direction === 'in' ? 'user' : 'assistant',
           content: m.content,
         }))
-        const systemPrompt = (aiConfig.system_prompt || 'Você é um assistente prestativo e gentil.') +
-          (kbText ? `\n\n# Base de conhecimento do negócio:\n${kbText}` : '')
+
         const { getAIResponse } = require('../lib/ai')
         const aiReply = await getAIResponse({
           userMessage: userText,
@@ -368,7 +412,7 @@ async function processMessage({ instanceRemoteId, fromJid, userText }) {
         })
         if (aiReply) {
           await sendMsg(instanceRemoteId, phone, aiReply)
-          log(`[IA] respondeu para ${phone} via ${aiConfig.provider}`)
+          log(`[IA] respondeu para ${phone} (assistente=${assistantId || 'global'})`)
         }
       } catch (e) { log(`[IA] Erro: ${e.message}`) }
     }
