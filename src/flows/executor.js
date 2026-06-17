@@ -222,43 +222,51 @@ async function runFlow(opts) {
     if (t === 'ai') {
       try {
         const db = getClient()
-        if (db) {
-          const { data: aiCfg } = await db.from('ai_configs').select('api_key, provider').eq('user_id', userId).maybeSingle()
-          if (aiCfg?.api_key) {
-            // Monta system prompt: instrução do nó + base de conhecimento do assistente da instância
-            let systemPrompt = d.instructions || 'Você é um assistente útil.'
+        if (!db) { console.error('[executor] nó ai: db não disponível'); }
+        else {
+          const { data: aiCfg } = await db.from('ai_configs').select('*').eq('user_id', userId).maybeSingle()
+          if (!aiCfg?.api_key) {
+            console.error(`[executor] nó ai: ai_configs não encontrado ou sem api_key para user=${userId}`)
+          } else {
+            // Monta system prompt: instrução do nó tem prioridade; depois usa assistente da instância
+            let systemPrompt = d.instructions || null
             if (assistantId) {
-              const { data: asst } = await db.from('assistants').select('system_prompt, flow_id').eq('id', assistantId).maybeSingle()
-              // Se o nó não tem instrução própria, usa a do assistente
-              if (asst?.system_prompt && !d.instructions) systemPrompt = asst.system_prompt
-              // Carrega base de conhecimento do assistente
-              const { data: kb } = await db.from('knowledge_base').select('title, content').eq('assistant_id', assistantId).limit(30)
-              const kbText = (kb || []).map(k => `## ${k.title}\n${k.content}`).join('\n\n')
-              if (kbText) systemPrompt += `\n\n# Base de conhecimento:\n${kbText}`
-              // Carrega referência do fluxo vinculado ao assistente
-              if (asst?.flow_id) {
-                const { data: linkedFlow } = await db.from('flows').select('nodes').eq('id', asst.flow_id).maybeSingle()
-                const flowCtx = extractFlowContext(linkedFlow?.nodes)
-                if (flowCtx) systemPrompt += `\n\n# Referência do fluxo:\n${flowCtx}`
-              }
+              try {
+                const { data: asst } = await db.from('assistants').select('system_prompt, flow_id').eq('id', assistantId).maybeSingle()
+                if (asst?.system_prompt && !systemPrompt) systemPrompt = asst.system_prompt
+                const { data: kb } = await db.from('knowledge_base').select('title, content').eq('assistant_id', assistantId).limit(30)
+                const kbText = (kb || []).map(k => `## ${k.title}\n${k.content}`).join('\n\n')
+                if (kbText) systemPrompt = (systemPrompt || '') + `\n\n# Base de conhecimento:\n${kbText}`
+                if (asst?.flow_id) {
+                  const { data: lf } = await db.from('flows').select('nodes').eq('id', asst.flow_id).maybeSingle()
+                  const flowCtx = extractFlowContext(lf?.nodes)
+                  if (flowCtx) systemPrompt += `\n\n# Referência do fluxo:\n${flowCtx}`
+                }
+              } catch (e) { console.error('[executor] nó ai: erro ao carregar assistente:', e.message) }
             }
+            systemPrompt = systemPrompt || 'Você é um assistente útil.'
+            // Usa SEMPRE o provedor/modelo configurado na página IA (ignora prefixo do nó)
             const { getAIResponse } = require('../lib/ai')
+            console.log(`[executor] nó ai: chamando ${aiCfg.provider} model=${aiCfg.model || 'gpt-4o-mini'}`)
             const reply = await getAIResponse({
               userMessage: vars.last_message || '',
               history: [],
               systemPrompt,
               apiKey: aiCfg.api_key,
               provider: aiCfg.provider || 'openai',
-              model: d.model || 'gpt-4o-mini',
+              model: aiCfg.model || 'gpt-4o-mini',
               temperature: Number(d.temperature) || 0.7,
             })
             if (reply) {
               if (d.successVar) vars[d.successVar] = reply
               await sendMsg(instanceId, phone, reply)
+              console.log(`[executor] nó ai: respondeu para ${phone}`)
+            } else {
+              console.error('[executor] nó ai: IA retornou resposta vazia')
             }
           }
         }
-      } catch (e) { console.error('[executor] nó ai:', e.message) }
+      } catch (e) { console.error('[executor] nó ai ERRO:', e.message) }
       // Pausa a sessão no nó IA — próximas mensagens voltam aqui (não reiniciam o fluxo)
       return { stoppedAt: cur, ended: false, variables: vars, reminderDueAt: null }
     }
@@ -384,31 +392,36 @@ async function processMessage({ instanceRemoteId, fromJid, userText }) {
     log(`nenhum fluxo ativo para: ${phone}`)
     // Fallback IA: responde automaticamente se configurado
     const { data: aiConfig } = await db.from('ai_configs').select('*').eq('user_id', inst.user_id).maybeSingle()
-    if (aiConfig?.fallback_enabled && aiConfig?.api_key) {
+    if (!aiConfig?.api_key) {
+      log(`[IA-fallback] ai_configs não encontrado ou sem api_key`)
+    } else if (!aiConfig.fallback_enabled) {
+      log(`[IA-fallback] fallback_enabled=false, ignorando`)
+    } else {
       try {
         const assistantId = inst.assistant_id || null
         let systemPrompt = aiConfig.system_prompt || 'Você é um assistente prestativo e gentil.'
 
-        // Carrega assistente específico da instância (se configurado)
+        // Tenta carregar assistente (erros aqui não impedem a resposta da IA)
         if (assistantId) {
-          const { data: asst } = await db.from('assistants').select('*').eq('id', assistantId).maybeSingle()
-          if (asst?.system_prompt) systemPrompt = asst.system_prompt
-
-          // Extrai contexto textual do fluxo vinculado ao assistente
-          if (asst?.flow_id) {
-            const { data: linkedFlow } = await db.from('flows').select('nodes').eq('id', asst.flow_id).maybeSingle()
-            const flowCtx = extractFlowContext(linkedFlow?.nodes)
-            if (flowCtx) systemPrompt += `\n\n# Referência do fluxo:\n${flowCtx}`
-          }
+          try {
+            const { data: asst } = await db.from('assistants').select('*').eq('id', assistantId).maybeSingle()
+            if (asst?.system_prompt) systemPrompt = asst.system_prompt
+            if (asst?.flow_id) {
+              const { data: lf } = await db.from('flows').select('nodes').eq('id', asst.flow_id).maybeSingle()
+              const flowCtx = extractFlowContext(lf?.nodes)
+              if (flowCtx) systemPrompt += `\n\n# Referência do fluxo:\n${flowCtx}`
+            }
+          } catch (e) { log(`[IA-fallback] erro assistente: ${e.message}`) }
         }
 
-        // Carrega base de conhecimento do assistente (ou global se sem assistente)
-        let kbQuery = db.from('knowledge_base').select('title, content').eq('user_id', inst.user_id)
-        if (assistantId) kbQuery = kbQuery.eq('assistant_id', assistantId)
-        else kbQuery = kbQuery.is('assistant_id', null)
-        const { data: kb } = await kbQuery.limit(30)
-        const kbText = (kb || []).map(k => `## ${k.title}\n${k.content}`).join('\n\n')
-        if (kbText) systemPrompt += `\n\n# Base de conhecimento:\n${kbText}`
+        // Tenta carregar base de conhecimento (erros aqui não impedem a resposta da IA)
+        try {
+          let kbQuery = db.from('knowledge_base').select('title, content').eq('user_id', inst.user_id)
+          if (assistantId) kbQuery = kbQuery.eq('assistant_id', assistantId)
+          const { data: kb } = await kbQuery.limit(30)
+          const kbText = (kb || []).map(k => `## ${k.title}\n${k.content}`).join('\n\n')
+          if (kbText) systemPrompt += `\n\n# Base de conhecimento:\n${kbText}`
+        } catch (e) { log(`[IA-fallback] erro base de conhecimento: ${e.message}`) }
 
         // Histórico da conversa (últimas 10 msgs)
         const { data: msgs } = await db.from('messages')
@@ -420,19 +433,22 @@ async function processMessage({ instanceRemoteId, fromJid, userText }) {
         }))
 
         const { getAIResponse } = require('../lib/ai')
+        log(`[IA-fallback] chamando ${aiConfig.provider} model=${aiConfig.model || 'gpt-4o-mini'} assistente=${assistantId || 'global'}`)
         const aiReply = await getAIResponse({
           userMessage: userText,
           history,
           systemPrompt,
           apiKey: aiConfig.api_key,
           provider: aiConfig.provider || 'openai',
-          model: aiConfig.model,
+          model: aiConfig.model || 'gpt-4o-mini',
         })
         if (aiReply) {
           await sendMsg(instanceRemoteId, phone, aiReply)
-          log(`[IA] respondeu para ${phone} (assistente=${assistantId || 'global'})`)
+          log(`[IA-fallback] respondeu para ${phone}`)
+        } else {
+          log('[IA-fallback] IA retornou resposta vazia')
         }
-      } catch (e) { log(`[IA] Erro: ${e.message}`) }
+      } catch (e) { log(`[IA-fallback] ERRO: ${e.message}`) }
     }
     return
   }
@@ -454,8 +470,22 @@ async function processMessage({ instanceRemoteId, fromJid, userText }) {
     if (cur?.type === 'ai') {
       const d = cur.data ?? {}
       try {
-        const { data: aiCfg } = await db.from('ai_configs').select('api_key, provider').eq('user_id', inst.user_id).maybeSingle()
-        if (aiCfg?.api_key) {
+        const { data: aiCfg } = await db.from('ai_configs').select('*').eq('user_id', inst.user_id).maybeSingle()
+        if (!aiCfg?.api_key) {
+          log(`[IA-nó] ai_configs não encontrado ou sem api_key para user=${inst.user_id}`)
+        } else {
+          let systemPrompt = d.instructions || null
+          // Enriquece com assistente da instância (erros não impedem a resposta)
+          if (inst.assistant_id) {
+            try {
+              const { data: asst } = await db.from('assistants').select('system_prompt').eq('id', inst.assistant_id).maybeSingle()
+              if (asst?.system_prompt && !systemPrompt) systemPrompt = asst.system_prompt
+              const { data: kb } = await db.from('knowledge_base').select('title, content').eq('assistant_id', inst.assistant_id).limit(30)
+              const kbText = (kb || []).map(k => `## ${k.title}\n${k.content}`).join('\n\n')
+              if (kbText) systemPrompt = (systemPrompt || '') + `\n\n# Base de conhecimento:\n${kbText}`
+            } catch (e) { log(`[IA-nó] erro ao carregar assistente: ${e.message}`) }
+          }
+          systemPrompt = systemPrompt || 'Você é um assistente útil.'
           const { data: msgs } = await db.from('messages')
             .select('direction, content').eq('instance_id', inst.id).eq('contact_phone', phone)
             .not('content', 'is', null).order('created_at', { ascending: false }).limit(10)
@@ -464,22 +494,25 @@ async function processMessage({ instanceRemoteId, fromJid, userText }) {
             content: m.content,
           }))
           const { getAIResponse } = require('../lib/ai')
+          log(`[IA-nó] chamando ${aiCfg.provider} model=${aiCfg.model || 'gpt-4o-mini'}`)
           const reply = await getAIResponse({
             userMessage: userText,
             history,
-            systemPrompt: d.instructions || 'Você é um assistente útil.',
+            systemPrompt,
             apiKey: aiCfg.api_key,
             provider: aiCfg.provider || 'openai',
-            model: d.model || 'gpt-4o-mini',
+            model: aiCfg.model || 'gpt-4o-mini',
             temperature: Number(d.temperature) || 0.7,
           })
           if (reply) {
             if (d.successVar) variables[d.successVar] = reply
             await sendMsg(inst.remote_id, phone, reply)
             log(`[IA-nó] respondeu para ${phone}`)
+          } else {
+            log('[IA-nó] IA retornou resposta vazia')
           }
         }
-      } catch (e) { log(`[IA-nó] Erro: ${e.message}`) }
+      } catch (e) { log(`[IA-nó] ERRO: ${e.message}`) }
       await updateSession(db, useSession, flow.id,
         { stoppedAt: useSession.current_node_id, ended: false, variables, reminderDueAt: null },
         inst, phone)
