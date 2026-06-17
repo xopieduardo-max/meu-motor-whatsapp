@@ -46,12 +46,23 @@ class WAConnection {
     // Mapeamento de número limpo → JID completo (ex: "112352116666619" → "112352116666619@lid")
     this._jidCache = {}
     this._debounce = {} // anti-flooding: processa só última msg dentro de 600ms
+    this.webhookUrl = null // webhook específico desta instância (sobrepõe WEBHOOK_URL global)
   }
 
   async connect() {
     try {
       const { state, saveCreds } = await useSupabaseAuthState(this.instanceId)
       const { version } = await fetchLatestBaileysVersion()
+
+      // Carrega webhook_url específico desta instância da plataforma
+      try {
+        const { getClient: getPlatformDb } = require('../lib/app-supabase')
+        const platformDb = getPlatformDb()
+        if (platformDb) {
+          const { data: instData } = await platformDb.from('instances').select('webhook_url').eq('remote_id', this.instanceId).maybeSingle()
+          if (instData?.webhook_url) this.webhookUrl = instData.webhook_url
+        }
+      } catch { /* ignora */ }
 
       this.socket = makeWASocket({
         version,
@@ -145,7 +156,7 @@ class WAConnection {
       this.socket.ev.on('messages.upsert', async ({ messages, type }) => {
         console.log(`[${this.instanceName}] messages.upsert tipo=${type} qtd=${messages.length}`)
 
-        const webhookUrl = process.env.WEBHOOK_URL
+        const webhookUrl = this.webhookUrl || process.env.WEBHOOK_URL
         if (typeof global.addDebugLog === 'function') {
           global.addDebugLog({ event: 'messages.upsert', instance: this.instanceName, type, count: messages.length, webhookUrl: webhookUrl || null })
         }

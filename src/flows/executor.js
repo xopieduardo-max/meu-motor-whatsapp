@@ -237,6 +237,26 @@ async function processMessage({ instanceRemoteId, fromJid, userText }) {
   if (!inst) { log(`instância não encontrada: ${instanceRemoteId}`); return }
   log(`instância ok: id=${inst.id} user=${inst.user_id}`)
 
+  // Horário de atendimento
+  const bh = inst.business_hours
+  if (bh?.enabled) {
+    try {
+      const tz = bh.timezone || 'America/Sao_Paulo'
+      const now = new Date(new Date().toLocaleString('en-US', { timeZone: tz }))
+      const day = now.getDay()
+      const cur = now.getHours() * 60 + now.getMinutes()
+      const allowedDays = Array.isArray(bh.days) ? bh.days.map(Number) : [1, 2, 3, 4, 5]
+      const [sh, sm] = (bh.start || '09:00').split(':').map(Number)
+      const [eh, em] = (bh.end || '18:00').split(':').map(Number)
+      if (!allowedDays.includes(day) || cur < sh * 60 + sm || cur >= eh * 60 + em) {
+        const msg = bh.outside_message || 'Nosso atendimento está fechado no momento. Retornaremos em breve!'
+        log(`Fora do horário (${tz}) dia=${day} ${now.getHours()}:${String(now.getMinutes()).padStart(2,'0')}`)
+        await sendMsg(instanceRemoteId, phone, msg)
+        return
+      }
+    } catch (e) { log(`Erro ao verificar horário: ${e.message}`) }
+  }
+
   // 2. Verifica se automação está pausada para este contato
   const { data: contactRecord } = await db.from('contacts').select('automation_paused')
     .eq('user_id', inst.user_id).eq('phone', phone).maybeSingle()
