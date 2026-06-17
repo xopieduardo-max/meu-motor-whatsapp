@@ -197,6 +197,32 @@ async function runFlow(opts) {
       cur = nextNode(edges, cur, null); continue
     }
 
+    if (t === 'ai') {
+      try {
+        const db = getClient()
+        if (db) {
+          const { data: aiCfg } = await db.from('ai_configs').select('api_key, provider').eq('user_id', userId).maybeSingle()
+          if (aiCfg?.api_key) {
+            const { getAIResponse } = require('../lib/ai')
+            const reply = await getAIResponse({
+              userMessage: vars.last_message || '',
+              history: [],
+              systemPrompt: d.instructions || 'Você é um assistente útil.',
+              apiKey: aiCfg.api_key,
+              provider: aiCfg.provider || 'openai',
+              model: d.model || 'gpt-4o-mini',
+              temperature: Number(d.temperature) || 0.7,
+            })
+            if (reply) {
+              if (d.successVar) vars[d.successVar] = reply
+              await sendMsg(instanceId, phone, reply)
+            }
+          }
+        }
+      } catch (e) { console.error('[executor] nó ai:', e.message) }
+      cur = nextNode(edges, cur, null); continue
+    }
+
     cur = nextNode(edges, cur, null)
   }
 
