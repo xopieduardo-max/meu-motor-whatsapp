@@ -242,7 +242,8 @@ async function runFlow(opts) {
           }
         }
       } catch (e) { console.error('[executor] nó ai:', e.message) }
-      cur = nextNode(edges, cur, null); continue
+      // Pausa a sessão no nó IA — próximas mensagens voltam aqui (não reiniciam o fluxo)
+      return { stoppedAt: cur, ended: false, variables: vars, reminderDueAt: null }
     }
 
     cur = nextNode(edges, cur, null)
@@ -431,6 +432,42 @@ async function processMessage({ instanceRemoteId, fromJid, userText }) {
   if (useSession?.current_node_id) {
     const cur = nodes.find(n => n.id === useSession.current_node_id)
     variables = { ...((useSession.variables) ?? {}), last_message: userText }
+
+    // Nó IA: conversa contínua — IA responde e sessão permanece neste nó
+    if (cur?.type === 'ai') {
+      const d = cur.data ?? {}
+      try {
+        const { data: aiCfg } = await db.from('ai_configs').select('api_key, provider').eq('user_id', inst.user_id).maybeSingle()
+        if (aiCfg?.api_key) {
+          const { data: msgs } = await db.from('messages')
+            .select('direction, content').eq('instance_id', inst.id).eq('contact_phone', phone)
+            .not('content', 'is', null).order('created_at', { ascending: false }).limit(10)
+          const history = (msgs || []).reverse().slice(0, -1).map(m => ({
+            role: m.direction === 'in' ? 'user' : 'assistant',
+            content: m.content,
+          }))
+          const { getAIResponse } = require('../lib/ai')
+          const reply = await getAIResponse({
+            userMessage: userText,
+            history,
+            systemPrompt: d.instructions || 'Você é um assistente útil.',
+            apiKey: aiCfg.api_key,
+            provider: aiCfg.provider || 'openai',
+            model: d.model || 'gpt-4o-mini',
+            temperature: Number(d.temperature) || 0.7,
+          })
+          if (reply) {
+            if (d.successVar) variables[d.successVar] = reply
+            await sendMsg(inst.remote_id, phone, reply)
+            log(`[IA-nó] respondeu para ${phone}`)
+          }
+        }
+      } catch (e) { log(`[IA-nó] Erro: ${e.message}`) }
+      await updateSession(db, useSession, flow.id,
+        { stoppedAt: useSession.current_node_id, ended: false, variables, reminderDueAt: null },
+        inst, phone)
+      return
+    }
 
     if (cur?.type === 'question') {
       const ok = validateAnswer(cur.data?.validate, userText)
