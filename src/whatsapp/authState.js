@@ -5,7 +5,7 @@ async function useSupabaseAuthState(instanceId) {
   const write = async (data, key) => {
     try {
       const value = JSON.parse(JSON.stringify(data, BufferJSON.replacer))
-      const { error } = await supabase.from('auth_state').upsert({ instance_id: instanceId, key, value })
+      const { error } = await supabase.from('auth_state').upsert({ instance_id: instanceId, key, value }, { onConflict: 'instance_id,key' })
       if (error) console.error(`[authState] Erro ao salvar key=${key} instance=${instanceId}:`, error.message)
     } catch (err) {
       console.error(`[authState] Exceção ao salvar key=${key}:`, err.message)
