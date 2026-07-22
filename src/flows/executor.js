@@ -778,7 +778,10 @@ async function updateSession(db, session, flowId, result, inst, phone) {
   }
   if (session) {
     await db.from('flow_sessions').update({ ...updates, flow_id: flowId }).eq('id', session.id)
-  } else if (!result.ended && inst && phone) {
+  } else if (inst && phone) {
+    // Salva SEMPRE — inclusive quando o fluxo termina de primeira (sem pausa).
+    // Sem este registro, a restart_policy não consegue detectar que o contato
+    // já completou o fluxo e acaba repetindo do início.
     const { error } = await db.from('flow_sessions').insert({
       user_id: inst.user_id,
       instance_id: inst.id,
