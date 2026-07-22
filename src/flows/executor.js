@@ -1,6 +1,46 @@
 const { getClient } = require('../lib/app-supabase')
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// ── Delay helpers ─────────────────────────────────────────────────────────────
+
+const SMART_PRESETS = {
+  very_short: { min: 1,   max: 5   },
+  short:      { min: 5,   max: 20  },
+  medium:     { min: 20,  max: 30  },
+  long:       { min: 50,  max: 120 },
+  very_long:  { min: 120, max: 300 },
+}
+
+function computeDelaySeconds(d) {
+  const mode = d?.delayMode
+  if (mode === 'none') return 0
+  if (mode === 'smart') {
+    const p = SMART_PRESETS[d?.delayPreset] ?? SMART_PRESETS.medium
+    return Math.round(p.min + Math.random() * (p.max - p.min))
+  }
+  // manual ou legado (campo seconds/delaySeconds/delay/delayMs)
+  const raw = d?.delaySeconds ?? d?.delay ?? d?.delayMs
+  if (raw !== undefined && raw !== null && raw !== '') {
+    const n = Number(raw)
+    if (Number.isFinite(n)) return Math.max(0, Math.min(300, n))
+  }
+  return 0
+}
+
+async function waitWithTyping(conn, jid, seconds) {
+  if (!conn || seconds <= 0) return
+  const totalMs = Math.min(seconds, 300) * 1000
+  const CHUNK = 50_000
+  let remaining = totalMs
+  while (remaining > 0) {
+    const step = Math.min(remaining, CHUNK)
+    try { await conn.socket?.sendPresenceUpdate('composing', jid) } catch {}
+    await new Promise(r => setTimeout(r, step))
+    remaining -= step
+  }
+  try { await conn.socket?.sendPresenceUpdate('paused', jid) } catch {}
+}
+
+// ── Outros Helpers ────────────────────────────────────────────────────────────
 
 function interpolate(text, vars) {
   return String(text ?? '')
@@ -139,6 +179,9 @@ async function runFlow(opts) {
   let cur = startId
   let safety = 0
 
+  const conn = getConn(instanceId)
+  const jid = conn?._formatarJID?.(phone) ?? phone
+
   while (cur && safety < 50) {
     safety++
     const node = nodes.find(n => n.id === cur)
@@ -148,6 +191,15 @@ async function runFlow(opts) {
 
     if (t === 'start') { cur = nextNode(edges, cur, null); continue }
 
+    // Pre-send delay (configurable per node via delayMode/delaySeconds/delayPreset)
+    if (['text','image','audio','video','pdf','question','buttons'].includes(t)) {
+      const delaySec = computeDelaySeconds(d)
+      // piso mínimo entre blocos consecutivos para o WhatsApp não descartar envios
+      const floor = safety === 1 ? 0 : 1.0
+      const wait = Math.max(delaySec, floor)
+      if (wait > 0) await waitWithTyping(conn, jid, wait)
+    }
+
     if (t === 'text') {
       // Variações aleatórias: se o nó tem "variations", sorteia uma
       if (Array.isArray(d.variations) && d.variations.length > 0) {
@@ -155,9 +207,12 @@ async function runFlow(opts) {
         const chosen = d.variations[idx]
         if (chosen) await sendMsg(instanceId, phone, interpolate(chosen, vars))
       } else {
-        // Comportamento padrão: envia todas as mensagens em sequência
+        // Comportamento padrão: envia todas as mensagens em sequência com pausa entre elas
         const msgs = Array.isArray(d.messages) && d.messages.length ? d.messages : (d.text ? [d.text] : [])
-        for (const m of msgs) await sendMsg(instanceId, phone, interpolate(m, vars))
+        for (let i = 0; i < msgs.length; i++) {
+          if (i > 0) await waitWithTyping(conn, jid, Math.max(computeDelaySeconds(d), 1.2))
+          await sendMsg(instanceId, phone, interpolate(msgs[i], vars))
+        }
       }
       cur = nextNode(edges, cur, null); continue
     }
@@ -170,7 +225,9 @@ async function runFlow(opts) {
     }
 
     if (t === 'delay') {
-      await new Promise(r => setTimeout(r, Math.min(Number(d.seconds) || 1, 10) * 1000))
+      // delay node explícito: usa d.seconds (sem limite de 10s — máx 300s)
+      const sec = Math.max(0, Math.min(Number(d.seconds) || 1, 300))
+      await waitWithTyping(conn, jid, sec)
       cur = nextNode(edges, cur, null); continue
     }
 
