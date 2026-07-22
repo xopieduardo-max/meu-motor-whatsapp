@@ -270,9 +270,31 @@ async function runFlow(opts) {
 
     if (t === 'webhook') {
       try {
-        const body = d.body ? interpolate(d.body, vars) : undefined
-        await fetch(d.url ?? '', { method: d.method ?? 'POST', headers: { 'Content-Type': 'application/json' }, body })
-      } catch { /* ignora */ }
+        const url = interpolate(d.url ?? '', vars)
+        if (url) {
+          const method = String(d.method ?? 'POST').toUpperCase()
+          const hasBody = method !== 'GET' && method !== 'DELETE'
+          const body = hasBody && d.body ? interpolate(d.body, vars) : undefined
+          const ctrl = new AbortController()
+          const to = setTimeout(() => ctrl.abort(), Math.min(Number(d.timeoutMs) || 8000, 15000))
+          const resp = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body, signal: ctrl.signal })
+          clearTimeout(to)
+          const txt = await resp.text()
+          let parsed = null
+          try { parsed = JSON.parse(txt) } catch { parsed = txt }
+          for (const m of Array.isArray(d.responseMapping) ? d.responseMapping : []) {
+            if (!m?.variable) continue
+            const path = String(m.path ?? '').trim()
+            let val = parsed
+            if (path) { for (const seg of path.split('.')) { if (val == null) break; val = val[seg] } }
+            vars[String(m.variable)] = typeof val === 'object' ? JSON.stringify(val) : val
+          }
+          vars.__webhook_status = resp.status
+        }
+      } catch (e) {
+        console.error(`[executor] webhook falhou:`, e.message)
+        vars.__webhook_error = String(e.message)
+      }
       cur = nextNode(edges, cur, null); continue
     }
 
@@ -521,7 +543,7 @@ async function processMessage({ instanceRemoteId, fromJid, userText }) {
 
   if (useSession?.current_node_id) {
     const cur = nodes.find(n => n.id === useSession.current_node_id)
-    variables = { ...((useSession.variables) ?? {}), last_message: userText }
+    variables = { ...((useSession.variables) ?? {}), last_message: userText, __last_user_text: userText }
 
     // Nó IA: conversa contínua — IA responde e sessão permanece neste nó
     if (cur?.type === 'ai') {
@@ -609,8 +631,83 @@ async function processMessage({ instanceRemoteId, fromJid, userText }) {
   } else {
     const start = nodes.find(n => n.type === 'start') ?? nodes[0]
     if (!start) return
+
+    // ── Política de reinício ───────────────────────────────────────────────────
+    // Verifica se este contato já completou este fluxo e se pode reiniciá-lo.
+    // Se não pode (restart_policy = 'never' ou 'keyword_only' sem keyword),
+    // rota para IA de conversão em vez de repetir o fluxo.
+    const restartMode = flow?.restart_policy?.mode || start?.data?.restartMode || 'never'
+    const isKeywordTrigger = !!keywordMatch
+
+    const shouldBlock = (restartMode === 'never') ||
+                        (restartMode === 'keyword_only' && !isKeywordTrigger)
+
+    if (shouldBlock) {
+      const { data: lastEnded } = await db.from('flow_sessions')
+        .select('id, variables').eq('instance_id', inst.id).eq('contact_phone', phone)
+        .eq('flow_id', flow.id).eq('status', 'ended')
+        .order('updated_at', { ascending: false }).limit(1).maybeSingle()
+
+      if (lastEnded) {
+        log(`[restart-policy] mode=${restartMode} — fluxo já concluído, ativando IA de conversão`)
+
+        // Verifica se já converteu (evento lead_captured registrado)
+        const { data: convEvent } = await db.from('flow_events')
+          .select('id').eq('user_id', inst.user_id).eq('contact_phone', phone)
+          .eq('flow_id', flow.id).eq('event_type', 'lead_captured').limit(1).maybeSingle()
+        const converted = !!convEvent
+
+        const { data: aiConfig } = await db.from('ai_configs').select('*').eq('user_id', inst.user_id).maybeSingle()
+        if (aiConfig?.api_key) {
+          try {
+            const assistantId = inst.assistant_id || null
+            let systemPrompt = aiConfig.system_prompt || 'Você é um assistente prestativo e gentil.'
+
+            if (assistantId) {
+              try {
+                const { data: asst } = await db.from('assistants').select('system_prompt').eq('id', assistantId).maybeSingle()
+                if (asst?.system_prompt) systemPrompt = asst.system_prompt
+                const { data: kb } = await db.from('knowledge_base').select('title, content').eq('assistant_id', assistantId).limit(30)
+                const kbText = (kb || []).map(k => `## ${k.title}\n${k.content}`).join('\n\n')
+                if (kbText) systemPrompt += `\n\n# Base de conhecimento:\n${kbText}`
+              } catch {}
+            }
+
+            if (!converted) {
+              const prevVars = lastEnded.variables || {}
+              const nome = prevVars.nome || prevVars.name || prevVars.full_name || ''
+              systemPrompt += `\n\n# CONTEXTO IMPORTANTE:\nEsta pessoa${nome ? ` (${nome})` : ''} já recebeu nossa apresentação completa mas ainda não finalizou a contratação/compra. Seu objetivo agora é retomar o contato de forma natural e calorosa, responder dúvidas com clareza e conduzi-la gentilmente para a decisão. NÃO repita a apresentação inicial. Seja breve, amigável e focado em resolver a objeção que o levou a não fechar ainda.`
+            }
+
+            const { data: msgs } = await db.from('messages')
+              .select('direction, content').eq('instance_id', inst.id).eq('contact_phone', phone)
+              .not('content', 'is', null).order('created_at', { ascending: false }).limit(10)
+            const history = (msgs || []).reverse().slice(0, -1).map(m => ({
+              role: m.direction === 'in' ? 'user' : 'assistant', content: m.content,
+            }))
+
+            const { getAIResponse } = require('../lib/ai')
+            const aiReply = await getAIResponse({
+              userMessage: userText, history, systemPrompt,
+              apiKey: aiConfig.api_key,
+              provider: aiConfig.provider || 'openai',
+              model: aiConfig.model || 'gpt-4o-mini',
+            })
+            if (aiReply) {
+              await sendMsg(instanceRemoteId, phone, aiReply)
+              log(`[restart-policy] IA respondeu — converted=${converted}`)
+            }
+          } catch (e) { log(`[restart-policy] IA ERRO: ${e.message}`) }
+        } else {
+          log(`[restart-policy] IA não configurada — mensagem ignorada`)
+        }
+        return
+      }
+    }
+    // ──────────────────────────────────────────────────────────────────────────
+
     startId = start.id
-    variables = { last_message: userText }
+    variables = { last_message: userText, __last_user_text: userText }
   }
 
   // Registra início da conversa (nova sessão)
