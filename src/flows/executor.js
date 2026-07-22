@@ -27,17 +27,18 @@ function computeDelaySeconds(d) {
 }
 
 async function waitWithTyping(conn, jid, seconds) {
-  if (!conn || seconds <= 0) return
+  if (seconds <= 0) return
   const totalMs = Math.min(seconds, 300) * 1000
   const CHUNK = 50_000
   let remaining = totalMs
   while (remaining > 0) {
     const step = Math.min(remaining, CHUNK)
-    try { await conn.socket?.sendPresenceUpdate('composing', jid) } catch {}
+    // typing indicator é best-effort — o delay acontece mesmo sem conn
+    if (conn) try { await conn.socket?.sendPresenceUpdate('composing', jid) } catch {}
     await new Promise(r => setTimeout(r, step))
     remaining -= step
   }
-  try { await conn.socket?.sendPresenceUpdate('paused', jid) } catch {}
+  if (conn) try { await conn.socket?.sendPresenceUpdate('paused', jid) } catch {}
 }
 
 // ── Outros Helpers ────────────────────────────────────────────────────────────
@@ -225,9 +226,9 @@ async function runFlow(opts) {
     }
 
     if (t === 'delay') {
-      // delay node explícito: usa d.seconds (sem limite de 10s — máx 300s)
-      const sec = Math.max(0, Math.min(Number(d.seconds) || 1, 300))
-      await waitWithTyping(conn, jid, sec)
+      // Editor salva como delaySeconds/delayMode — usa computeDelaySeconds para leitura correta
+      const sec = computeDelaySeconds(d) || Math.max(0, Math.min(Number(d.seconds) || 0, 300))
+      if (sec > 0) await waitWithTyping(conn, jid, sec)
       cur = nextNode(edges, cur, null); continue
     }
 
