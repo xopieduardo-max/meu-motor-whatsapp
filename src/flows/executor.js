@@ -488,14 +488,18 @@ async function _processMessage({ instanceRemoteId, fromJid, userText }) {
     const { data: f } = await db.from('flows').select('*').eq('id', session.flow_id).maybeSingle()
     flow = f
   } else {
-    // Só usa fluxos sem keyword — nunca usa instFlows[0] como fallback
-    // porque esse seria um fluxo com keyword disparando sem gatilho
-    flow = instFlows.find(f => !Array.isArray(f.keywords) || f.keywords.length === 0) ?? null
+    // 1ª prioridade: fluxo sem keywords (funil padrão que roda pra todos)
+    // 2ª prioridade: primeiro fluxo ativo (fallback — cobre o caso onde o
+    //   único fluxo tem keywords como re-trigger opcional mas precisa rodar
+    //   para novos contatos também)
+    flow = instFlows.find(f => !Array.isArray(f.keywords) || f.keywords.length === 0)
+        ?? instFlows[0]
+        ?? null
   }
 
-  log(`fluxos encontrados: ${instFlows.length} | keywordMatch=${!!keywordMatch} | session=${!!session}`)
+  log(`fluxos encontrados: ${instFlows.length} | keywordMatch=${!!keywordMatch} | session=${!!session} | flow=${flow?.name || 'null'}`)
   if (!flow) {
-    log(`nenhum fluxo ativo para: ${phone}`)
+    log(`nenhum fluxo ativo para: ${phone} — instFlows=[${instFlows.map(f=>f.name).join(',')}]`)
     // Fallback IA: responde automaticamente se configurado
     const { data: aiConfig } = await db.from('ai_configs').select('*').eq('user_id', inst.user_id).maybeSingle()
     if (!aiConfig?.api_key) {
