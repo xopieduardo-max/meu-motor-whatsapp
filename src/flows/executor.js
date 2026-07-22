@@ -41,6 +41,15 @@ async function waitWithTyping(conn, jid, seconds) {
   if (conn) try { await conn.socket?.sendPresenceUpdate('paused', jid) } catch {}
 }
 
+// Retorna o ISO do próximo lembrete, lendo o novo formato ou o legado
+function firstReminderDueAt(d) {
+  const reminders = Array.isArray(d?.reminders) && d.reminders.length > 0 ? d.reminders : null
+  const firstMin = reminders
+    ? Math.max(1, Number(reminders[0]?.minutes) || 30)
+    : Math.max(1, Number(d?.timeoutMinutes) || 30)
+  return new Date(Date.now() + firstMin * 60_000).toISOString()
+}
+
 // ── Outros Helpers ────────────────────────────────────────────────────────────
 
 function interpolate(text, vars) {
@@ -234,9 +243,7 @@ async function runFlow(opts) {
 
     if (t === 'question') {
       await sendMsg(instanceId, phone, interpolate(d.question ?? '', vars))
-      const reminder = d.timeoutEnabled
-        ? new Date(Date.now() + (Number(d.timeoutMinutes) || 30) * 60_000).toISOString()
-        : null
+      const reminder = d.timeoutEnabled ? firstReminderDueAt(d) : null
       return { stoppedAt: cur, ended: false, variables: vars, reminderDueAt: reminder }
     }
 
@@ -244,9 +251,7 @@ async function runFlow(opts) {
       const optsArr = Array.isArray(d.options) ? d.options : []
       const lines = optsArr.map((o, i) => `${i + 1}. ${o}`).join('\n')
       await sendMsg(instanceId, phone, `${interpolate(d.text ?? '', vars)}\n\n${lines}`)
-      const reminder = d.timeoutEnabled
-        ? new Date(Date.now() + (Number(d.timeoutMinutes) || 30) * 60_000).toISOString()
-        : null
+      const reminder = d.timeoutEnabled ? firstReminderDueAt(d) : null
       return { stoppedAt: cur, ended: false, variables: vars, reminderDueAt: reminder }
     }
 
@@ -370,9 +375,27 @@ async function applyTag(userId, phone, tag, action) {
   } catch (e) { console.error('[executor] applyTag:', e.message) }
 }
 
-// ── Ponto de entrada ──────────────────────────────────────────────────────────
+// ── Mutex por contato (previne race condition com mensagens rápidas) ──────────
+// Node.js é single-thread, mas múltiplas mensagens chegando "ao mesmo tempo"
+// ficam em fila no event loop. Sem mutex, dois handlers encontram session=null
+// e ambos disparam o fluxo, enviando tudo duplicado para o contato.
+const _activeLocks = new Map()
 
-async function processMessage({ instanceRemoteId, fromJid, userText }) {
+async function processMessage(opts) {
+  const key = `${opts.instanceRemoteId}::${opts.fromJid}`
+  if (_activeLocks.get(key)) {
+    console.log(`[executor] mensagem descartada — processamento em andamento para ${opts.fromJid}`)
+    return
+  }
+  _activeLocks.set(key, true)
+  try {
+    await _processMessage(opts)
+  } finally {
+    _activeLocks.delete(key)
+  }
+}
+
+async function _processMessage({ instanceRemoteId, fromJid, userText }) {
   const log = (msg) => {
     console.log(`[executor] ${msg}`)
     if (typeof global.addDebugLog === 'function') global.addDebugLog({ event: 'exec_log', msg })
@@ -455,7 +478,8 @@ async function processMessage({ instanceRemoteId, fromJid, userText }) {
   let flow = null
   if (keywordMatch) {
     flow = keywordMatch
-    // Keyword sempre reinicia — encerra qualquer sessão ativa
+    // Keyword dispara reinício — encerra sessão ativa de qualquer fluxo
+    // (a restart_policy decide logo abaixo se realmente executa ou aciona a IA)
     if (session) {
       await db.from('flow_sessions').update({ status: 'ended', updated_at: new Date().toISOString() }).eq('id', session.id)
       session = null
@@ -464,7 +488,9 @@ async function processMessage({ instanceRemoteId, fromJid, userText }) {
     const { data: f } = await db.from('flows').select('*').eq('id', session.flow_id).maybeSingle()
     flow = f
   } else {
-    flow = instFlows.find(f => !Array.isArray(f.keywords) || f.keywords.length === 0) ?? instFlows[0] ?? null
+    // Só usa fluxos sem keyword — nunca usa instFlows[0] como fallback
+    // porque esse seria um fluxo com keyword disparando sem gatilho
+    flow = instFlows.find(f => !Array.isArray(f.keywords) || f.keywords.length === 0) ?? null
   }
 
   log(`fluxos encontrados: ${instFlows.length} | keywordMatch=${!!keywordMatch} | session=${!!session}`)
@@ -606,7 +632,7 @@ async function processMessage({ instanceRemoteId, fromJid, userText }) {
         if (invalidNext) {
           variables.invalid_answer = userText
           const result = await runFlow({ nodes, edges, startId: invalidNext, instanceId: inst.remote_id, phone, variables, userId: inst.user_id, assistantId: inst.assistant_id })
-          await updateSession(db, useSession, flow.id, result)
+          await updateSession(db, useSession, flow.id, result, inst, phone)
           return
         }
         const errMsg = cur.data?.validationError || 'Resposta inválida. Por favor, tente novamente.'
@@ -634,23 +660,25 @@ async function processMessage({ instanceRemoteId, fromJid, userText }) {
     if (!start) return
 
     // ── Política de reinício ───────────────────────────────────────────────────
-    // Verifica se este contato já completou este fluxo e se pode reiniciá-lo.
-    // Se não pode (restart_policy = 'never' ou 'keyword_only' sem keyword),
-    // rota para IA de conversão em vez de repetir o fluxo.
     const restartMode = flow?.restart_policy?.mode || start?.data?.restartMode || 'never'
     const isKeywordTrigger = !!keywordMatch
+    log(`[restart-policy] mode=${restartMode} isKeywordTrigger=${isKeywordTrigger} flow.restart_policy=${JSON.stringify(flow?.restart_policy)}`)
 
     const shouldBlock = (restartMode === 'never') ||
                         (restartMode === 'keyword_only' && !isKeywordTrigger)
 
+    log(`[restart-policy] shouldBlock=${shouldBlock}`)
+
     if (shouldBlock) {
-      const { data: lastEnded } = await db.from('flow_sessions')
+      const { data: lastEnded, error: lErr } = await db.from('flow_sessions')
         .select('id, variables').eq('instance_id', inst.id).eq('contact_phone', phone)
         .eq('flow_id', flow.id).eq('status', 'ended')
         .order('updated_at', { ascending: false }).limit(1).maybeSingle()
 
+      log(`[restart-policy] lastEnded=${lastEnded?.id || 'null'} queryError=${lErr?.message || 'none'}`)
+
       if (lastEnded) {
-        log(`[restart-policy] mode=${restartMode} — fluxo já concluído, ativando IA de conversão`)
+        log(`[restart-policy] fluxo já concluído — ativando IA de conversão`)
 
         // Verifica se já converteu (evento lead_captured registrado)
         const { data: convEvent } = await db.from('flow_events')
@@ -724,6 +752,7 @@ async function processMessage({ instanceRemoteId, fromJid, userText }) {
 
   // Cross-flow goto
   let activeFlowId = flow.id
+  const originFlowId = flow.id // guarda o fluxo original para restart_policy
   let safety = 0
   while (result.ended && result.variables.__goto_flow_id && safety < 5) {
     safety++
@@ -740,6 +769,17 @@ async function processMessage({ instanceRemoteId, fromJid, userText }) {
   }
 
   await updateSession(db, useSession, activeFlowId, result, inst, phone)
+
+  // Se o fluxo original foi redirecionado via goto, salva sessão encerrada para
+  // ele também — sem isso, restart_policy nunca detecta que o contato já o completou
+  if (activeFlowId !== originFlowId && result.ended && !useSession) {
+    await db.from('flow_sessions').insert({
+      user_id: inst.user_id, instance_id: inst.id, flow_id: originFlowId,
+      contact_phone: phone, status: 'ended', current_node_id: null,
+      variables: result.variables, reminder_due_at: null,
+      updated_at: new Date().toISOString(),
+    }).then(null, () => {}) // erro silencioso — não crítico
+  }
 
   // Registra conclusão e captura de lead
   if (result.ended) {
@@ -789,8 +829,12 @@ async function updateSession(db, session, flowId, result, inst, phone) {
       contact_phone: phone,
       ...updates,
     })
-    if (error) console.error('[executor] erro ao salvar sessão:', error.message)
+    if (error) {
+      console.error('[executor] ERRO ao salvar sessão (verifique SUPABASE_SERVICE_KEY no Railway):', error.message, error.code)
+    } else {
+      console.log(`[executor] sessão salva: flow=${flowId} phone=${phone} status=${updates.status}`)
+    }
   }
 }
 
-module.exports = { processMessage }
+module.exports = { processMessage, runFlow, updateSession }
