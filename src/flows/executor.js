@@ -372,6 +372,37 @@ async function applyTag(userId, phone, tag, action) {
     const next = action === 'remove' ? cur.filter(t => t !== tag) : Array.from(new Set([...cur, tag]))
     if (existing) await db.from('contacts').update({ tags: next, last_contact: new Date().toISOString() }).eq('id', existing.id)
     else await db.from('contacts').upsert({ user_id: userId, phone, name: phone, tags: next, last_contact: new Date().toISOString() }, { onConflict: 'user_id,phone' })
+
+    // Feedback loop de aprendizado: tag de conversão → salva conversa na knowledge_base
+    const CONVERSION_TAGS = ['convertido', 'vendido', 'comprou', 'fechou', 'converteu', 'lead_quente']
+    if (action === 'add' && CONVERSION_TAGS.some(t => tag.toLowerCase().includes(t))) {
+      // Bump lead score +50 (conversão)
+      db.rpc('increment_lead_score', { p_user_id: userId, p_phone: phone, p_delta: 50 })
+        .then(null, e => console.error('[lead-score] erro no bump de conversão:', e.message))
+
+      // Salva a conversa como exemplo de sucesso para a IA aprender
+      try {
+        const { data: inst } = await db.from('instances').select('id, assistant_id').eq('user_id', userId).limit(1).maybeSingle()
+        if (inst) {
+          const { data: msgs } = await db.from('messages')
+            .select('direction, content').eq('instance_id', inst.id).eq('contact_phone', phone)
+            .not('content', 'is', null).order('created_at', { ascending: false }).limit(16)
+          if (msgs && msgs.length >= 3) {
+            const convo = msgs.reverse().map(m =>
+              `${m.direction === 'in' ? 'Cliente' : 'Bot'}: ${m.content}`
+            ).join('\n')
+            const stamp = new Date().toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' })
+            await db.from('knowledge_base').insert({
+              user_id: userId,
+              assistant_id: inst.assistant_id || null,
+              title: `[Conversão] ${stamp} — tag: ${tag}`,
+              content: `Conversa que resultou em conversão. Use como referência para responder leads similares:\n\n${convo}`,
+            })
+            console.log(`[aprendizado] conversa de ${phone} salva como exemplo de conversão`)
+          }
+        }
+      } catch (e) { console.error('[aprendizado] erro ao salvar exemplo:', e.message) }
+    }
   } catch (e) { console.error('[executor] applyTag:', e.message) }
 }
 
@@ -437,7 +468,7 @@ async function _processMessage({ instanceRemoteId, fromJid, userText }) {
   // 2a. Opt-out automático — detecta PARE/STOP/SAIR e desativa automação
   const OPT_OUT_PATTERNS = /^(pare|parar|stop|sair|sair fora|cancelar|descadastrar|remover|naoquero|n[aã]o quero|n[aã]o|unsubscribe|chega|tchau|encerrar|desativar)$/i
   const normalizedText = String(userText || '').trim()
-    .normalize('NFD').replace(/[̀-ͯ]/g, '')  // remove acentos
+    .normalize('NFD').replace(/[̀-ͯ]/g, '')
     .toLowerCase().replace(/\s+/g, ' ')
   if (OPT_OUT_PATTERNS.test(normalizedText)) {
     log(`[opt-out] ${phone} solicitou cancelamento com: "${userText}"`)
@@ -452,7 +483,25 @@ async function _processMessage({ instanceRemoteId, fromJid, userText }) {
     return
   }
 
-  // 2b. Verifica se automação está pausada para este contato
+  // 2b. Escalação inteligente — detecta frustração e chama atendente humano
+  const ESCALATION_PATTERNS = /\b(atendente|falar com algu[eé]m|falar com uma pessoa|quero um humano|humano por favor|gerente|supervisor|respons[aá]vel|absurdo|rid[íi]culo|horr[íi]vel|p[eé]ssimo|n[aã]o aguento|me tire|me tira|inacredit[aá]vel|raiva|furioso|indignado|revoltado|preciso de ajuda urgente|socorro|chefe|me desconecta)\b/i
+  if (!OPT_OUT_PATTERNS.test(normalizedText) && ESCALATION_PATTERNS.test(userText || '')) {
+    log(`[escalação] frustração detectada para ${phone}: "${userText}"`)
+    try {
+      await db.from('contacts').upsert({
+        user_id: inst.user_id, phone, name: phone,
+        automation_paused: true,
+        needs_human: true,
+        escalated_at: new Date().toISOString(),
+        last_contact: new Date().toISOString(),
+      }, { onConflict: 'user_id,phone' })
+      await sendMsg(instanceRemoteId, phone, 'Entendido! Já estou chamando um atendente para continuar com você pessoalmente. Em breve alguém estará aqui. 😊')
+      log(`[escalação] atendente solicitado, automação pausada para ${phone}`)
+    } catch (e) { log(`[escalação] erro: ${e.message}`) }
+    return
+  }
+
+  // 2c. Verifica se automação está pausada para este contato
   const { data: contactRecord } = await db.from('contacts').select('automation_paused')
     .eq('user_id', inst.user_id).eq('phone', phone).maybeSingle()
   if (contactRecord?.automation_paused) {
@@ -761,13 +810,20 @@ async function _processMessage({ instanceRemoteId, fromJid, userText }) {
     variables = { last_message: userText, __last_user_text: userText }
   }
 
-  // Registra início da conversa (nova sessão)
+  // Registra início da conversa (nova sessão) e pontua engajamento
   if (!useSession) {
     db.from('flow_events').insert({
       user_id: inst.user_id, instance_id: inst.id, flow_id: flow.id,
       contact_phone: phone, event_type: 'conversation_started',
       metadata: { text: userText.slice(0, 200) },
     }).then(null, () => {})
+    // Lead score: +10 por iniciar um fluxo
+    db.rpc('increment_lead_score', { p_user_id: inst.user_id, p_phone: phone, p_delta: 10 })
+      .then(null, () => {})
+  } else {
+    // Lead score: +10 por continuar respondendo ativamente em sessão existente
+    db.rpc('increment_lead_score', { p_user_id: inst.user_id, p_phone: phone, p_delta: 10 })
+      .then(null, () => {})
   }
 
   let result = await runFlow({ nodes, edges, startId, instanceId: inst.remote_id, phone, variables, userId: inst.user_id, assistantId: inst.assistant_id })
@@ -812,6 +868,9 @@ async function _processMessage({ instanceRemoteId, fromJid, userText }) {
         last_contact: new Date().toISOString(),
       }, { onConflict: 'user_id,phone' })
     } catch { /* ignora */ }
+    // Lead score: +20 por completar o fluxo inteiro
+    db.rpc('increment_lead_score', { p_user_id: inst.user_id, p_phone: phone, p_delta: 20 })
+      .then(null, () => {})
 
     db.from('flow_events').insert({
       user_id: inst.user_id, instance_id: inst.id, flow_id: activeFlowId,
