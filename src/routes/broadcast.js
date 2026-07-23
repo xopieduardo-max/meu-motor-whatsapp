@@ -5,6 +5,21 @@ const { getClient } = require('../lib/app-supabase')
 // Broadcasts cancelados (em memória — suficiente para o Railway)
 const cancelledBroadcasts = new Set()
 
+// Substitui {{nome}}, {{primeiro_nome}}, {{telefone}} no texto do disparo
+function interpolate(text, vars) {
+  if (!text) return text
+  return String(text)
+    .replace(/\{\{\s*(\w+)\s*\}\}/g, (_, k) => String(vars[k] ?? ''))
+    .replace(/\[(\w+)\]/g, (_, k) => vars[k] !== undefined ? String(vars[k]) : `[${k}]`)
+}
+
+function buildVars(phone, name) {
+  const cleanPhone = String(phone).replace(/@.*$/, '').replace(/\D/g, '')
+  const fullName = String(name || '')
+  const firstName = fullName.split(' ')[0] || fullName
+  return { nome: fullName, primeiro_nome: firstName, telefone: cleanPhone, phone: cleanPhone }
+}
+
 // POST /broadcast/cancel/:broadcastId
 router.post('/cancel/:broadcastId', async (req, res) => {
   const { broadcastId } = req.params
@@ -62,6 +77,10 @@ router.post('/', async (req, res) => {
         const toStr = String(to)
         if (!toStr || toStr === 'undefined' || toStr === 'null') continue
 
+        // Personaliza a mensagem com dados do contato ({{nome}}, {{primeiro_nome}}, etc.)
+        const vars = buildVars(toStr, recipientNames[to] || recipientNames[toStr])
+        const personalizedMsg = interpolate(message, vars)
+
         // Tenta enviar com 2 retentativas automáticas para rate-limit
         for (let attempt = 1; attempt <= 3; attempt++) {
           try {
@@ -69,13 +88,13 @@ router.post('/', async (req, res) => {
               const { processMessage } = require('../flows/executor')
               await processMessage({ instanceRemoteId: instanceId, fromJid: toStr, userText: '' })
             } else if (mediaType === 'image' && mediaUrl) {
-              await conn.enviarImagem(toStr, mediaUrl, message || '')
+              await conn.enviarImagem(toStr, mediaUrl, interpolate(message, vars) || '')
             } else if (mediaType === 'audio' && mediaUrl) {
               await conn.enviarAudio(toStr, mediaUrl)
             } else if (mediaType === 'pdf' && mediaUrl) {
               await conn.enviarPDF(toStr, mediaUrl)
-            } else if (message) {
-              await conn.enviarTexto(toStr, message)
+            } else if (personalizedMsg) {
+              await conn.enviarTexto(toStr, personalizedMsg)
             }
             success = true
             errMsg = null
@@ -171,7 +190,10 @@ router.post('/resend/:broadcastId', async (req, res) => {
       for (const r of failed) {
         let success = false; let errMsg = null
         try {
-          if (message) await conn.enviarTexto(r.phone, message)
+          if (message) {
+            const rVars = buildVars(r.phone, r.name)
+            await conn.enviarTexto(r.phone, interpolate(message, rVars))
+          }
           success = true
         } catch (e) { errMsg = e.message }
         await db.from('broadcast_recipients')
