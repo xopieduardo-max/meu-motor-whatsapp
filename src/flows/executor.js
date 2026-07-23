@@ -434,7 +434,25 @@ async function _processMessage({ instanceRemoteId, fromJid, userText }) {
     } catch (e) { log(`Erro ao verificar horário: ${e.message}`) }
   }
 
-  // 2. Verifica se automação está pausada para este contato
+  // 2a. Opt-out automático — detecta PARE/STOP/SAIR e desativa automação
+  const OPT_OUT_PATTERNS = /^(pare|parar|stop|sair|sair fora|cancelar|descadastrar|remover|naoquero|n[aã]o quero|n[aã]o|unsubscribe|chega|tchau|encerrar|desativar)$/i
+  const normalizedText = String(userText || '').trim()
+    .normalize('NFD').replace(/[̀-ͯ]/g, '')  // remove acentos
+    .toLowerCase().replace(/\s+/g, ' ')
+  if (OPT_OUT_PATTERNS.test(normalizedText)) {
+    log(`[opt-out] ${phone} solicitou cancelamento com: "${userText}"`)
+    try {
+      await db.from('contacts').upsert(
+        { user_id: inst.user_id, phone, name: phone, automation_paused: true, last_contact: new Date().toISOString() },
+        { onConflict: 'user_id,phone' }
+      )
+      await sendMsg(instanceRemoteId, phone, 'Tudo certo! Você não receberá mais mensagens automáticas. Para reativar, entre em contato com a nossa equipe.')
+      log(`[opt-out] automação pausada para ${phone}`)
+    } catch (e) { log(`[opt-out] erro ao pausar: ${e.message}`) }
+    return
+  }
+
+  // 2b. Verifica se automação está pausada para este contato
   const { data: contactRecord } = await db.from('contacts').select('automation_paused')
     .eq('user_id', inst.user_id).eq('phone', phone).maybeSingle()
   if (contactRecord?.automation_paused) {
