@@ -528,7 +528,9 @@ async function _processMessage({ instanceRemoteId, fromJid, userText, messageTyp
   // 2d. Áudio — responde imediatamente e não processa o fluxo
   if (messageType === 'audio') {
     log(`[mídia] áudio recebido de ${phone} — respondendo automaticamente`)
-    await sendMsg(instanceRemoteId, phone, '🎵 Não consigo ouvir áudios por aqui. Por favor, me envie sua mensagem em texto e terei prazer em ajudar! 😊')
+    // Busca mensagem de áudio personalizada da instância, senão usa padrão
+    const audioMsg = inst.audio_reply_message || 'Amada, no momento eu não consigo ouvir áudios. Pode digitar para mim, por favor? 🙏'
+    await sendMsg(instanceRemoteId, phone, audioMsg)
     return
   }
 
@@ -539,8 +541,9 @@ async function _processMessage({ instanceRemoteId, fromJid, userText, messageTyp
   }
 
   // Para imagem/documento/vídeo sem legenda, injeta contexto no texto para a IA saber
-  const mediaContext = messageType === 'image'    ? '[O cliente enviou uma imagem/foto]'
-                     : messageType === 'document' ? '[O cliente enviou um documento/arquivo]'
+  // Usa linguagem que o prompt do assistente consegue reconhecer como comprovante
+  const mediaContext = messageType === 'image'    ? '[O cliente enviou uma imagem — provavelmente um comprovante de pagamento]'
+                     : messageType === 'document' ? '[O cliente enviou um documento/arquivo — provavelmente um comprovante de pagamento em PDF]'
                      : messageType === 'video'    ? '[O cliente enviou um vídeo]'
                      : null
   const effectiveUserText = userText || mediaContext || ''
