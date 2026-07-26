@@ -313,13 +313,19 @@ async function runFlow(opts) {
           if (!aiCfg?.api_key) {
             console.error(`[executor] nó ai: ai_configs não encontrado ou sem api_key para user=${userId}`)
           } else {
-            // Monta system prompt: instrução do nó tem prioridade; depois usa assistente da instância
-            let systemPrompt = d.instructions || null
-            if (assistantId) {
+            // Assistente efetivo: nó tem prioridade sobre a instância
+            const effectiveAssistantId = d.assistantId || assistantId
+
+            // Monta system prompt
+            // 1. system prompt do assistente (se houver)
+            // 2. instrução do nó soma por cima (contexto específico daquele momento do fluxo)
+            let systemPrompt = null
+            if (effectiveAssistantId) {
               try {
-                const { data: asst } = await db.from('assistants').select('system_prompt, flow_id').eq('id', assistantId).maybeSingle()
-                if (asst?.system_prompt && !systemPrompt) systemPrompt = asst.system_prompt
-                const { data: kb } = await db.from('knowledge_base').select('title, content').eq('assistant_id', assistantId).limit(30)
+                const { data: asst } = await db.from('assistants').select('system_prompt, flow_id').eq('id', effectiveAssistantId).maybeSingle()
+                if (asst?.system_prompt) systemPrompt = asst.system_prompt
+                // Base de conhecimento do assistente
+                const { data: kb } = await db.from('knowledge_base').select('title, content').eq('assistant_id', effectiveAssistantId).limit(40)
                 const kbText = (kb || []).map(k => `## ${k.title}\n${k.content}`).join('\n\n')
                 if (kbText) systemPrompt = (systemPrompt || '') + `\n\n# Base de conhecimento:\n${kbText}`
                 if (asst?.flow_id) {
@@ -329,17 +335,27 @@ async function runFlow(opts) {
                 }
               } catch (e) { console.error('[executor] nó ai: erro ao carregar assistente:', e.message) }
             }
+            // Instrução específica do nó soma ao system prompt do assistente
+            if (d.instructions) {
+              systemPrompt = systemPrompt
+                ? `${systemPrompt}\n\n# Instrução específica para este momento:\n${d.instructions}`
+                : d.instructions
+            }
             systemPrompt = systemPrompt || 'Você é um assistente útil.'
-            // Usa SEMPRE o provedor/modelo configurado na página IA (ignora prefixo do nó)
+
+            // Modelo: nó tem prioridade; fallback para configuração global
+            const nodeModel = d.model && d.model !== '' ? d.model : null
+            const effectiveModel = nodeModel || aiCfg.model || 'gpt-4o-mini'
+
             const { getAIResponse } = require('../lib/ai')
-            console.log(`[executor] nó ai: chamando ${aiCfg.provider} model=${aiCfg.model || 'gpt-4o-mini'}`)
+            console.log(`[executor] nó ai: assistente=${effectiveAssistantId || 'nenhum'} model=${effectiveModel}`)
             const reply = await getAIResponse({
               userMessage: vars.last_message || '',
               history: [],
               systemPrompt,
               apiKey: aiCfg.api_key,
               provider: aiCfg.provider || 'openai',
-              model: aiCfg.model || 'gpt-4o-mini',
+              model: effectiveModel,
               temperature: Number(d.temperature) || 0.7,
             })
             if (reply) {
