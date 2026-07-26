@@ -442,7 +442,7 @@ async function processMessage(opts) {
   }
 }
 
-async function _processMessage({ instanceRemoteId, fromJid, userText }) {
+async function _processMessage({ instanceRemoteId, fromJid, userText, messageType }) {
   const log = (msg) => {
     console.log(`[executor] ${msg}`)
     if (typeof global.addDebugLog === 'function') global.addDebugLog({ event: 'exec_log', msg })
@@ -525,6 +525,26 @@ async function _processMessage({ instanceRemoteId, fromJid, userText }) {
     return
   }
 
+  // 2d. Áudio — responde imediatamente e não processa o fluxo
+  if (messageType === 'audio') {
+    log(`[mídia] áudio recebido de ${phone} — respondendo automaticamente`)
+    await sendMsg(instanceRemoteId, phone, '🎵 Não consigo ouvir áudios por aqui. Por favor, me envie sua mensagem em texto e terei prazer em ajudar! 😊')
+    return
+  }
+
+  // 2e. Figurinha — silenciosamente ignora (não responde nada)
+  if (messageType === 'sticker') {
+    log(`[mídia] figurinha recebida de ${phone} — ignorada`)
+    return
+  }
+
+  // Para imagem/documento/vídeo sem legenda, injeta contexto no texto para a IA saber
+  const mediaContext = messageType === 'image'    ? '[O cliente enviou uma imagem/foto]'
+                     : messageType === 'document' ? '[O cliente enviou um documento/arquivo]'
+                     : messageType === 'video'    ? '[O cliente enviou um vídeo]'
+                     : null
+  const effectiveUserText = userText || mediaContext || ''
+
   // 3. Sessão ativa
   let { data: session } = await db.from('flow_sessions').select('*')
     .eq('instance_id', inst.id).eq('contact_phone', phone).eq('status', 'active').maybeSingle()
@@ -546,7 +566,7 @@ async function _processMessage({ instanceRemoteId, fromJid, userText }) {
     }
   }
 
-  const txtLower = userText.toLowerCase()
+  const txtLower = effectiveUserText.toLowerCase()
   const keywordMatch = instFlows.find(f => {
     const kws = Array.isArray(f.keywords) ? f.keywords : []
     return kws.some(k => {
@@ -657,7 +677,7 @@ async function _processMessage({ instanceRemoteId, fromJid, userText }) {
 
   if (useSession?.current_node_id) {
     const cur = nodes.find(n => n.id === useSession.current_node_id)
-    variables = { ...((useSession.variables) ?? {}), last_message: userText, __last_user_text: userText }
+    variables = { ...((useSession.variables) ?? {}), last_message: effectiveUserText, __last_user_text: effectiveUserText }
 
     // Nó IA: conversa contínua — IA responde e sessão permanece neste nó
     if (cur?.type === 'ai') {
@@ -667,18 +687,32 @@ async function _processMessage({ instanceRemoteId, fromJid, userText }) {
         if (!aiCfg?.api_key) {
           log(`[IA-nó] ai_configs não encontrado ou sem api_key para user=${inst.user_id}`)
         } else {
-          let systemPrompt = d.instructions || null
-          // Enriquece com assistente da instância (erros não impedem a resposta)
-          if (inst.assistant_id) {
+          // Assistente efetivo: nó tem prioridade sobre a instância (mesma lógica do runFlow)
+          const effectiveAssistantId = d.assistantId || inst.assistant_id
+          let systemPrompt = null
+          if (effectiveAssistantId) {
             try {
-              const { data: asst } = await db.from('assistants').select('system_prompt').eq('id', inst.assistant_id).maybeSingle()
-              if (asst?.system_prompt && !systemPrompt) systemPrompt = asst.system_prompt
-              const { data: kb } = await db.from('knowledge_base').select('title, content').eq('assistant_id', inst.assistant_id).limit(30)
+              const { data: asst } = await db.from('assistants').select('system_prompt, flow_id').eq('id', effectiveAssistantId).maybeSingle()
+              if (asst?.system_prompt) systemPrompt = asst.system_prompt
+              const { data: kb } = await db.from('knowledge_base').select('title, content').eq('assistant_id', effectiveAssistantId).limit(40)
               const kbText = (kb || []).map(k => `## ${k.title}\n${k.content}`).join('\n\n')
               if (kbText) systemPrompt = (systemPrompt || '') + `\n\n# Base de conhecimento:\n${kbText}`
+              if (asst?.flow_id) {
+                const { data: lf } = await db.from('flows').select('nodes').eq('id', asst.flow_id).maybeSingle()
+                const flowCtx = extractFlowContext(lf?.nodes)
+                if (flowCtx) systemPrompt += `\n\n# Referência do fluxo:\n${flowCtx}`
+              }
             } catch (e) { log(`[IA-nó] erro ao carregar assistente: ${e.message}`) }
           }
+          // Instrução específica do nó soma ao system prompt
+          if (d.instructions) {
+            systemPrompt = systemPrompt
+              ? `${systemPrompt}\n\n# Instrução específica para este momento:\n${d.instructions}`
+              : d.instructions
+          }
           systemPrompt = systemPrompt || 'Você é um assistente útil.'
+          const nodeModel = d.model && d.model !== '' ? d.model : null
+          const effectiveModel = nodeModel || aiCfg.model || 'gpt-4o-mini'
           const { data: msgs } = await db.from('messages')
             .select('direction, content').eq('instance_id', inst.id).eq('contact_phone', phone)
             .not('content', 'is', null).order('created_at', { ascending: false }).limit(10)
@@ -687,14 +721,14 @@ async function _processMessage({ instanceRemoteId, fromJid, userText }) {
             content: m.content,
           }))
           const { getAIResponse } = require('../lib/ai')
-          log(`[IA-nó] chamando ${aiCfg.provider} model=${aiCfg.model || 'gpt-4o-mini'}`)
+          log(`[IA-nó] chamando ${aiCfg.provider} model=${effectiveModel} assistente=${effectiveAssistantId || 'nenhum'}`)
           const reply = await getAIResponse({
-            userMessage: userText,
+            userMessage: effectiveUserText,
             history,
             systemPrompt,
             apiKey: aiCfg.api_key,
             provider: aiCfg.provider || 'openai',
-            model: aiCfg.model || 'gpt-4o-mini',
+            model: effectiveModel,
             temperature: Number(d.temperature) || 0.7,
           })
           if (reply) {
@@ -713,11 +747,11 @@ async function _processMessage({ instanceRemoteId, fromJid, userText }) {
     }
 
     if (cur?.type === 'question') {
-      const ok = validateAnswer(cur.data?.validate, userText)
+      const ok = validateAnswer(cur.data?.validate, effectiveUserText)
       if (!ok) {
         const invalidNext = nextNode(edges, useSession.current_node_id, 'opt:invalid')
         if (invalidNext) {
-          variables.invalid_answer = userText
+          variables.invalid_answer = effectiveUserText
           const result = await runFlow({ nodes, edges, startId: invalidNext, instanceId: inst.remote_id, phone, variables, userId: inst.user_id, assistantId: inst.assistant_id })
           await updateSession(db, useSession, flow.id, result, inst, phone)
           return
@@ -726,16 +760,16 @@ async function _processMessage({ instanceRemoteId, fromJid, userText }) {
         await sendMsg(inst.remote_id, phone, errMsg)
         return
       }
-      if (cur.data?.variable) variables[cur.data.variable] = userText
+      if (cur.data?.variable) variables[cur.data.variable] = effectiveUserText
     }
 
     if (cur?.type === 'buttons') {
       const opts = Array.isArray(cur.data?.options) ? cur.data.options : []
-      const idx = parseInt(userText, 10)
-      variables.last_choice = !isNaN(idx) && opts[idx - 1] ? opts[idx - 1] : userText
+      const idx = parseInt(effectiveUserText, 10)
+      variables.last_choice = !isNaN(idx) && opts[idx - 1] ? opts[idx - 1] : effectiveUserText
     }
 
-    const handle = pickHandle(cur, userText)
+    const handle = pickHandle(cur, effectiveUserText)
     const next = nextNode(edges, useSession.current_node_id, handle)
     if (!next) {
       await db.from('flow_sessions').update({ status: 'ended', updated_at: new Date().toISOString() }).eq('id', useSession.id)
@@ -804,7 +838,7 @@ async function _processMessage({ instanceRemoteId, fromJid, userText }) {
 
             const { getAIResponse } = require('../lib/ai')
             const aiReply = await getAIResponse({
-              userMessage: userText, history, systemPrompt,
+              userMessage: effectiveUserText, history, systemPrompt,
               apiKey: aiConfig.api_key,
               provider: aiConfig.provider || 'openai',
               model: aiConfig.model || 'gpt-4o-mini',
@@ -823,7 +857,7 @@ async function _processMessage({ instanceRemoteId, fromJid, userText }) {
     // ──────────────────────────────────────────────────────────────────────────
 
     startId = start.id
-    variables = { last_message: userText, __last_user_text: userText }
+    variables = { last_message: effectiveUserText, __last_user_text: effectiveUserText }
   }
 
   // Registra início da conversa (nova sessão) e pontua engajamento
@@ -831,7 +865,7 @@ async function _processMessage({ instanceRemoteId, fromJid, userText }) {
     db.from('flow_events').insert({
       user_id: inst.user_id, instance_id: inst.id, flow_id: flow.id,
       contact_phone: phone, event_type: 'conversation_started',
-      metadata: { text: userText.slice(0, 200) },
+      metadata: { text: effectiveUserText.slice(0, 200) },
     }).then(null, () => {})
     // Lead score: +10 por iniciar um fluxo
     db.rpc('increment_lead_score', { p_user_id: inst.user_id, p_phone: phone, p_delta: 10 })

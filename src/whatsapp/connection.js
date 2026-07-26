@@ -185,20 +185,38 @@ class WAConnection {
           // Guarda mapeamento número → JID completo para uso no envio
           this._jidCache[from] = rawJid
 
+          // Detecta tipo de mídia antes de extrair texto
+          const msgKeys = Object.keys(msg.message || {})
+          const isAudio = msgKeys.some(k => k === 'audioMessage' || k === 'pttMessage')
+          const isImage = msgKeys.includes('imageMessage')
+          const isDoc   = msgKeys.some(k => k === 'documentMessage' || k === 'documentWithCaptionMessage')
+          const isVideo = msgKeys.includes('videoMessage')
+          const isSticker = msgKeys.includes('stickerMessage')
+
+          const messageType = isAudio ? 'audio'
+            : isImage ? 'image'
+            : isDoc   ? 'document'
+            : isVideo ? 'video'
+            : isSticker ? 'sticker'
+            : 'text'
+
           const text =
             msg.message?.conversation ||
             msg.message?.extendedTextMessage?.text ||
             msg.message?.buttonsResponseMessage?.selectedDisplayText ||
             msg.message?.listResponseMessage?.title ||
+            msg.message?.imageMessage?.caption ||
+            msg.message?.videoMessage?.caption ||
             ''
 
           // Marca mensagem como lida
           try { await this.socket.readMessages([msg.key]) } catch {}
 
           // Salva mensagem recebida no inbox da plataforma
+          const inboxContent = text || (isAudio ? '[Áudio]' : isImage ? '[Imagem]' : isDoc ? '[Documento]' : isVideo ? '[Vídeo]' : isSticker ? '[Figurinha]' : '')
           this._saveInboxMessage({
             phone: rawJid, phoneName: msg.pushName || from,
-            direction: 'in', type: 'text', content: text,
+            direction: 'in', type: messageType, content: inboxContent,
           }).catch(() => {})
 
           // Anti-flooding: debounce de 600ms por contato
@@ -206,14 +224,15 @@ class WAConnection {
           if (this._debounce[debounceKey]) clearTimeout(this._debounce[debounceKey])
           this._debounce[debounceKey] = setTimeout(() => {
             delete this._debounce[debounceKey]
-            console.log(`[${this.instanceName}] Processando → from=${rawJid} text="${text}"`)
+            console.log(`[${this.instanceName}] Processando → from=${rawJid} type=${messageType} text="${text}"`)
             if (typeof global.addDebugLog === 'function') {
-              global.addDebugLog({ event: 'processing', instance: this.instanceName, fromJid: rawJid, text })
+              global.addDebugLog({ event: 'processing', instance: this.instanceName, fromJid: rawJid, messageType, text })
             }
             processMessage({
               instanceRemoteId: this.instanceId,
               fromJid: rawJid,
               userText: text,
+              messageType,
               socket: this.socket,
             }).then(() => {
               if (typeof global.addDebugLog === 'function') {
