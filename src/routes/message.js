@@ -65,6 +65,22 @@ router.post('/:instanceId/pdf', async (req, res) => {
   }
 })
 
+// Enviar vídeo
+router.post('/:instanceId/video', async (req, res) => {
+  try {
+    const { number, url, caption } = req.body
+    if (!number || !url) return res.status(400).json({ error: 'number e url são obrigatórios' })
+
+    const conn = manager.obterConexao(req.params.instanceId)
+    if (!conn) return res.status(404).json({ error: 'Instância não encontrada' })
+
+    await conn.enviarVideo(number, url, caption || '')
+    res.json({ success: true, message: 'Vídeo enviado' })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
 // Enviar sequência de mensagens com delay (o funil completo)
 router.post('/:instanceId/flow', async (req, res) => {
   try {
@@ -96,6 +112,9 @@ router.post('/:instanceId/flow', async (req, res) => {
               break
             case 'audio':
               await conn.enviarAudio(number, msg.url)
+              break
+            case 'video':
+              await conn.enviarVideo(number, msg.url, msg.caption || '')
               break
             case 'pdf':
               await conn.enviarPDF(number, msg.url, msg.filename || 'documento.pdf')

@@ -347,6 +347,14 @@ class WAConnection {
     await this._salvarMensagem(numero, 'document', url)
   }
 
+  async enviarVideo(numero, url, caption = '') {
+    this._verificarConexao()
+    const jid = this._formatarJID(numero)
+    const res = await fetch(url)
+    const buffer = Buffer.from(await res.arrayBuffer())
+    await this.socket.sendMessage(jid, { video: buffer, ...(caption ? { caption } : {}) })
+    await this._salvarMensagem(numero, 'video', url)
+  }
 
   desconectar() {
     // Cancela todos os debounces pendentes antes de fechar o socket

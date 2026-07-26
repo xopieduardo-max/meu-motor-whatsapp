@@ -177,7 +177,8 @@ async function sendMedia(instanceId, phone, type, url, extra) {
   try {
     if (type === 'image')  await conn.enviarImagem(phone, url, extra?.caption || '')
     else if (type === 'audio') await conn.enviarAudio(phone, url)
-    else if (type === 'pdf' || type === 'video') await conn.enviarPDF(phone, url, extra?.filename || 'arquivo.pdf', extra?.caption || '')
+    else if (type === 'video') await conn.enviarVideo(phone, url, extra?.caption || '')
+    else if (type === 'pdf') await conn.enviarPDF(phone, url, extra?.filename || 'arquivo.pdf', extra?.caption || '')
   } catch (e) { console.error(`[executor] sendMedia(${type}) falhou:`, e.message) }
 }
 
