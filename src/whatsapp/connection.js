@@ -64,6 +64,7 @@ class WAConnection {
         keepAliveIntervalMs: 25000,
         retryRequestDelayMs: 2000,
         syncFullHistory: false,
+        markOnlineOnConnect: false, // evita conflito 440 com o app do celular
       })
 
       this.socket.ev.on('connection.update', async (update) => {
@@ -149,19 +150,29 @@ class WAConnection {
           global.addDebugLog({ event: 'messages.upsert', instance: this.instanceName, type, count: messages.length })
         }
 
-        if (type !== 'notify') return
+        // notify = mensagem em tempo real; append = mensagens que chegaram durante reconexão
+        // Processa ambos, mas para 'append' só aceita mensagens recentes (< 3 min)
+        if (type !== 'notify' && type !== 'append') return
+        const isAppend = type === 'append'
+        const now = Date.now()
 
         for (const msg of messages) {
           // Loga o remoteJid bruto para diagnóstico
           const rawJid = msg.key.remoteJid || ''
-          console.log(`[${this.instanceName}] rawJid=${rawJid} fromMe=${msg.key.fromMe}`)
+          console.log(`[${this.instanceName}] rawJid=${rawJid} fromMe=${msg.key.fromMe} type=${type}`)
           if (typeof global.addDebugLog === 'function') {
-            global.addDebugLog({ event: 'raw_message', instance: this.instanceName, rawJid, fromMe: msg.key.fromMe, msgType: Object.keys(msg.message || {}).join(',') })
+            global.addDebugLog({ event: 'raw_message', instance: this.instanceName, rawJid, fromMe: msg.key.fromMe, msgType: Object.keys(msg.message || {}).join(','), type })
           }
 
           // Ignora grupos, broadcasts e status
           if (rawJid.endsWith('@g.us') || rawJid.endsWith('@broadcast') || rawJid === 'status@broadcast') continue
           if (msg.key.fromMe) continue // ignora mensagens enviadas pelo bot
+
+          // Para append, só processa mensagens dos últimos 3 minutos (evita reprocessar histórico antigo)
+          if (isAppend) {
+            const msgTs = Number(msg.messageTimestamp) * 1000
+            if (!msgTs || now - msgTs > 3 * 60 * 1000) continue
+          }
 
           const from = rawJid.replace(/@.*$/, '').replace(/:\d+$/, '') // remove sufixo de dispositivo
           if (!from) continue
