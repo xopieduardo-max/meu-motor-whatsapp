@@ -54,10 +54,11 @@ class WAConnection {
       const { state, saveCreds } = await useSupabaseAuthState(this.instanceId)
       const { version } = await fetchLatestBaileysVersion()
 
+      console.log(`[${this.instanceName}] Iniciando makeWASocket version=${version?.join?.('.')}`)
       this.socket = makeWASocket({
         version,
         auth: state,
-        logger: pino({ level: 'silent' }),
+        logger: pino({ level: 'warn' }), // 'warn' expõe erros internos do Baileys nos logs
         printQRInTerminal: false,
         browser: Browsers.macOS('Safari'),
         connectTimeoutMs: 60000,
@@ -65,7 +66,7 @@ class WAConnection {
         keepAliveIntervalMs: 25000,
         retryRequestDelayMs: 2000,
         syncFullHistory: false,
-        markOnlineOnConnect: false, // evita conflito 440 com o app do celular
+        markOnlineOnConnect: false,
       })
 
       this.socket.ev.on('connection.update', async (update) => {
