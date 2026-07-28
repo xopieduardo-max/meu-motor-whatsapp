@@ -570,15 +570,16 @@ async function _processMessage({ instanceRemoteId, fromJid, userText, messageTyp
     }
   }
 
-  const txtLower = effectiveUserText.toLowerCase()
+  const normalize = s => String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').trim()
+  const txtNorm = normalize(effectiveUserText)
   const keywordMatch = instFlows.find(f => {
     const kws = Array.isArray(f.keywords) ? f.keywords : []
     return kws.some(k => {
-      const rawWord = (typeof k === 'string' ? k : k?.word ?? '').toLowerCase().trim()
+      const rawWord = normalize(typeof k === 'string' ? k : k?.word ?? '')
       if (!rawWord) return false
       const exact = typeof k === 'object' && k?.mode === 'exact'
       const words = rawWord.split(',').map(w => w.trim()).filter(Boolean)
-      return words.some(word => exact ? txtLower === word : txtLower.includes(word))
+      return words.some(word => exact ? txtNorm === word : txtNorm.includes(word))
     })
   })
 
