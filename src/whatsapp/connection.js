@@ -43,9 +43,10 @@ class WAConnection {
     this.socket = null
     this.qrBase64 = null
     this.status = 'disconnected'
-    this._jidCache = {}   // numero_limpo → JID completo recebido
-    this._lidToPhone = {} // lid_numero → JID @s.whatsapp.net correto (via contacts.upsert)
+    this._jidCache = {}
+    this._lidToPhone = {}
     this._debounce = {}
+    this._failCount405 = 0  // contador de falhas consecutivas 405
   }
 
   async connect() {
@@ -93,11 +94,25 @@ class WAConnection {
             console.log(`[${this.instanceName}] Deslogado permanentemente.`)
             await this._limparCredenciais()
           } else if (qrExpirou) {
-            // QR expirou — aguarda 15s antes de gerar novo para não sofrer rate limit do WhatsApp
             const delay = 15000
             console.log(`[${this.instanceName}] QR expirou/rejeitado. Aguardando ${delay/1000}s para novo QR...`)
             setTimeout(() => this.connect(), delay)
+          } else if (codigo === 405 || errMsg.toLowerCase().includes('connection failure')) {
+            // 405 = WhatsApp rejeitou a sessão (credenciais inválidas no servidor)
+            this._failCount405++
+            if (this._failCount405 >= 5) {
+              console.log(`[${this.instanceName}] 5 falhas 405 consecutivas — sessão inválida. Limpando credenciais para gerar novo QR...`)
+              await this._limparCredenciais()
+              this._failCount405 = 0
+              setTimeout(() => this.connect(), 10000)
+            } else {
+              // Backoff exponencial: 10s, 20s, 40s, 80s
+              const delay = Math.min(10000 * Math.pow(2, this._failCount405 - 1), 120000)
+              console.log(`[${this.instanceName}] Falha 405 (${this._failCount405}/5). Aguardando ${delay/1000}s...`)
+              setTimeout(() => this.connect(), delay)
+            }
           } else {
+            this._failCount405 = 0
             console.log(`[${this.instanceName}] Reconectando em 5s...`)
             setTimeout(() => this.connect(), 5000)
           }
@@ -106,6 +121,7 @@ class WAConnection {
         if (connection === 'open') {
           this.qrBase64 = null
           this.status = 'connected'
+          this._failCount405 = 0 // sessão ok — reseta contador
           const phone = this.socket.user?.id?.split(':')[0] || null
           await this._salvarStatus('connected', phone)
           console.log(`[${this.instanceName}] Conectado! Número: ${phone}`)

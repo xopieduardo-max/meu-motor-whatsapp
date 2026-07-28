@@ -73,7 +73,7 @@ router.get('/:id/status', async (req, res) => {
   }
 })
 
-// Reconectar instância
+// Reconectar instância (mantém credenciais existentes)
 router.post('/:id/reconnect', async (req, res) => {
   try {
     const { data } = await supabase.from('instances').select('*').eq('remote_id', req.params.id).maybeSingle()
@@ -81,6 +81,27 @@ router.post('/:id/reconnect', async (req, res) => {
 
     await manager.conectarInstancia(req.params.id, data.name)
     res.json({ success: true, message: 'Reconectando...' })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// Resetar autenticação — limpa credenciais e força novo QR Code
+router.post('/:id/reset-auth', async (req, res) => {
+  try {
+    const { data } = await supabase.from('instances').select('*').eq('remote_id', req.params.id).maybeSingle()
+    if (!data) return res.status(404).json({ error: 'Instância não encontrada' })
+
+    // Para a conexão atual (se houver)
+    manager.removerConexao(req.params.id)
+
+    // Limpa o auth_state no Supabase
+    await supabase.from('auth_state').delete().eq('instance_id', req.params.id)
+
+    // Reconecta — sem credenciais, vai gerar QR
+    await manager.conectarInstancia(req.params.id, data.name)
+    console.log(`[reset-auth] credenciais limpas para ${data.name} (${req.params.id})`)
+    res.json({ success: true, message: 'Credenciais limpas. Aguarde o QR Code.' })
   } catch (err) {
     res.status(500).json({ error: err.message })
   }
