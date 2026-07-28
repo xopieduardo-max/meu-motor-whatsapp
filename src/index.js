@@ -13,6 +13,13 @@ process.on('unhandledRejection', (reason, promise) => {
   console.error('[unhandledRejection] Promise rejeitada sem .catch():', reason)
 })
 
+// ── Ring buffer de diagnóstico (últimos 200 eventos) ─────────────────────────
+const _debugLogs = []
+global.addDebugLog = (entry) => {
+  _debugLogs.push({ ...entry, ts: new Date().toISOString() })
+  if (_debugLogs.length > 200) _debugLogs.shift()
+}
+
 const express = require('express')
 const cors = require('cors')
 const manager = require('./whatsapp/manager')
@@ -43,6 +50,16 @@ app.get('/', (req, res) => {
 
 app.get('/health', (req, res) => {
   res.json({ status: 'ok' })
+})
+
+// Endpoint de diagnóstico (protegido por API key)
+app.get('/debug/logs', requireApiKey, (req, res) => {
+  const conns = manager.listarConexoes()
+  res.json({
+    timestamp: new Date().toISOString(),
+    instances: conns,
+    recentEvents: _debugLogs.slice(-100).reverse(),
+  })
 })
 
 // Rotas protegidas por API key
