@@ -43,9 +43,9 @@ class WAConnection {
     this.socket = null
     this.qrBase64 = null
     this.status = 'disconnected'
-    // Mapeamento de número limpo → JID completo (ex: "112352116666619" → "112352116666619@lid")
-    this._jidCache = {}
-    this._debounce = {} // anti-flooding: processa só última msg dentro de 600ms
+    this._jidCache = {}   // numero_limpo → JID completo recebido
+    this._lidToPhone = {} // lid_numero → JID @s.whatsapp.net correto (via contacts.upsert)
+    this._debounce = {}
   }
 
   async connect() {
@@ -113,6 +113,22 @@ class WAConnection {
       })
 
       this.socket.ev.on('creds.update', saveCreds)
+
+      // Mapeia @lid → @s.whatsapp.net — Baileys dispara quando sincroniza contatos
+      // Sem este mapa, _formatarJID não sabe o número real de contatos multi-device
+      this.socket.ev.on('contacts.upsert', (contacts) => {
+        let mapped = 0
+        for (const c of contacts) {
+          if (c.lid && c.id && c.id.endsWith('@s.whatsapp.net')) {
+            const lidNum = String(c.lid).replace(/@lid$/, '')
+            if (!this._lidToPhone[lidNum]) {
+              this._lidToPhone[lidNum] = c.id
+              mapped++
+            }
+          }
+        }
+        if (mapped > 0) console.log(`[${this.instanceName}] contacts.upsert: ${mapped} novos mapeamentos @lid→phone`)
+      })
 
       // Captura histórico de mensagens quando Baileys reconecta/sincroniza
       this.socket.ev.on('messaging-history.set', async ({ messages: histMsgs, chats }) => {
@@ -388,17 +404,33 @@ class WAConnection {
   _formatarJID(numero) {
     const s = String(numero)
     if (s.includes('@')) {
-      // @lid é ID interno do WhatsApp — para ENVIO precisa ser @s.whatsapp.net
       if (s.endsWith('@lid')) {
-        const num = s.replace(/@lid$/, '').replace(/\D/g, '')
-        return `${num}@s.whatsapp.net`
+        const lidNum = s.replace(/@lid$/, '')
+        // Tenta resolver pelo mapa construído via contacts.upsert
+        const phoneJid = this._lidToPhone[lidNum]
+        if (phoneJid) {
+          console.log(`[${this.instanceName}] @lid resolvido: ${s} → ${phoneJid}`)
+          return phoneJid
+        }
+        // Mapeamento ainda não disponível — mantém @lid
+        // (@lid funciona para sendPresenceUpdate; para sendMessage pode falhar
+        //  mas é melhor que usar um número fictício @s.whatsapp.net)
+        console.warn(`[${this.instanceName}] @lid sem mapeamento: ${s} — usando @lid direto`)
+        return s
       }
       return s
     }
     const limpo = s.replace(/\D/g, '')
-    // Cache pode ter @lid — converte para @s.whatsapp.net
+    // Se o cache tem @lid, tenta resolver; caso contrário usa direto
     const cached = this._jidCache[limpo]
-    if (cached && !cached.endsWith('@lid')) return cached
+    if (cached) {
+      if (!cached.endsWith('@lid')) return cached
+      // Cached como @lid — tenta resolver
+      const lidNum = cached.replace(/@lid$/, '')
+      const phoneJid = this._lidToPhone[lidNum]
+      if (phoneJid) return phoneJid
+      return cached // mantém @lid se sem mapeamento
+    }
     return `${limpo}@s.whatsapp.net`
   }
 
