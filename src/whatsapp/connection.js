@@ -271,6 +271,14 @@ class WAConnection {
     } catch {}
   }
 
+  // Wrapper com timeout de 20s para socket.sendMessage (evita hanging indefinido)
+  async _sendWithTimeout(jid, content, timeoutMs = 20000) {
+    return Promise.race([
+      this.socket.sendMessage(jid, content),
+      new Promise((_, reject) => setTimeout(() => reject(new Error(`sendMessage timeout após ${timeoutMs}ms`)), timeoutMs))
+    ])
+  }
+
   async enviarTexto(numero, texto) {
     await this._verificarConexao()
     const jid = this._formatarJID(numero)
@@ -280,7 +288,7 @@ class WAConnection {
     // Typing indicator proporcional ao tamanho da mensagem (máx 3s)
     const typingMs = Math.min(800 + texto.length * 20, 3000)
     await this._typing(jid, typingMs)
-    await this.socket.sendMessage(jid, { text: texto })
+    await this._sendWithTimeout(jid, { text: texto })
     await this._salvarMensagem(numero, 'text', texto)
     this._saveInboxMessage({ phone: jid, direction: 'out', type: 'text', content: texto }).catch(() => {})
   }
@@ -304,7 +312,7 @@ class WAConnection {
         mimetype = 'audio/mpeg' // fallback
       }
     }
-    await this.socket.sendMessage(jid, { audio: buffer, mimetype, ptt: true })
+    await this._sendWithTimeout(jid, { audio: buffer, mimetype, ptt: true }, 30000)
     await this._salvarMensagem(numero, 'audio', url)
   }
 
@@ -313,7 +321,7 @@ class WAConnection {
     const jid = this._formatarJID(numero)
     const res = await fetch(url)
     const buffer = Buffer.from(await res.arrayBuffer())
-    await this.socket.sendMessage(jid, { image: buffer, caption: legenda })
+    await this._sendWithTimeout(jid, { image: buffer, caption: legenda }, 30000)
     await this._salvarMensagem(numero, 'image', url)
   }
 
@@ -322,12 +330,12 @@ class WAConnection {
     const jid = this._formatarJID(numero)
     const res = await fetch(url)
     const buffer = Buffer.from(await res.arrayBuffer())
-    await this.socket.sendMessage(jid, {
+    await this._sendWithTimeout(jid, {
       document: buffer,
       mimetype: 'application/pdf',
       fileName: nomeArquivo,
       ...(caption ? { caption } : {}),
-    })
+    }, 30000)
     await this._salvarMensagem(numero, 'document', url)
   }
 
@@ -336,7 +344,7 @@ class WAConnection {
     const jid = this._formatarJID(numero)
     const res = await fetch(url)
     const buffer = Buffer.from(await res.arrayBuffer())
-    await this.socket.sendMessage(jid, { video: buffer, ...(caption ? { caption } : {}) })
+    await this._sendWithTimeout(jid, { video: buffer, ...(caption ? { caption } : {}) }, 30000)
     await this._salvarMensagem(numero, 'video', url)
   }
 
