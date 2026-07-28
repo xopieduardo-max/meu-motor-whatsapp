@@ -272,7 +272,7 @@ class WAConnection {
   }
 
   async enviarTexto(numero, texto) {
-    this._verificarConexao()
+    await this._verificarConexao()
     const jid = this._formatarJID(numero)
     if (typeof global.addDebugLog === 'function') {
       global.addDebugLog({ event: 'send_text', instance: this.instanceName, to_jid: jid, text: texto.slice(0, 80) })
@@ -286,7 +286,7 @@ class WAConnection {
   }
 
   async enviarAudio(numero, url) {
-    this._verificarConexao()
+    await this._verificarConexao()
     const jid = this._formatarJID(numero)
     const u = (url || '').toLowerCase()
     const isOgg = u.includes('.ogg') || u.includes('.opus') || u.includes('.oga')
@@ -309,7 +309,7 @@ class WAConnection {
   }
 
   async enviarImagem(numero, url, legenda = '') {
-    this._verificarConexao()
+    await this._verificarConexao()
     const jid = this._formatarJID(numero)
     const res = await fetch(url)
     const buffer = Buffer.from(await res.arrayBuffer())
@@ -318,7 +318,7 @@ class WAConnection {
   }
 
   async enviarPDF(numero, url, nomeArquivo = 'documento.pdf', caption = '') {
-    this._verificarConexao()
+    await this._verificarConexao()
     const jid = this._formatarJID(numero)
     const res = await fetch(url)
     const buffer = Buffer.from(await res.arrayBuffer())
@@ -332,7 +332,7 @@ class WAConnection {
   }
 
   async enviarVideo(numero, url, caption = '') {
-    this._verificarConexao()
+    await this._verificarConexao()
     const jid = this._formatarJID(numero)
     const res = await fetch(url)
     const buffer = Buffer.from(await res.arrayBuffer())
@@ -351,10 +351,15 @@ class WAConnection {
     this.status = 'disconnected'
   }
 
-  _verificarConexao() {
-    if (!this.socket || this.status !== 'connected') {
-      throw new Error('WhatsApp não está conectado')
+  async _verificarConexao() {
+    if (this.status === 'connected' && this.socket) return
+    // Aguarda até 8s para conexão ficar pronta (cobre reconexões automáticas)
+    const deadline = Date.now() + 8000
+    while (Date.now() < deadline) {
+      await new Promise(r => setTimeout(r, 400))
+      if (this.status === 'connected' && this.socket) return
     }
+    throw new Error(`WhatsApp não conectado (status=${this.status}) após 8s`)
   }
 
   _formatarJID(numero) {

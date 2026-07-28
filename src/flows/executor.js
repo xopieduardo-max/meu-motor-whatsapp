@@ -166,9 +166,9 @@ function getConn(instanceId) {
 
 async function sendMsg(instanceId, phone, text) {
   const conn = getConn(instanceId)
-  if (!conn) return
+  if (!conn) { console.error(`[executor] sendMsg: instância ${instanceId} não encontrada no manager`); return }
   try { await conn.enviarTexto(phone, text) }
-  catch (e) { console.error(`[executor] enviarTexto falhou:`, e.message) }
+  catch (e) { console.error(`[executor] enviarTexto falhou para ${phone}: ${e.message}`) }
 }
 
 async function sendMedia(instanceId, phone, type, url, extra) {
