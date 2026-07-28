@@ -284,10 +284,14 @@ class WAConnection {
 
   // Wrapper com timeout de 20s para socket.sendMessage (evita hanging indefinido)
   async _sendWithTimeout(jid, content, timeoutMs = 20000) {
-    return Promise.race([
+    const type = Object.keys(content)[0]
+    console.log(`[${this.instanceName}] sendMessage → jid=${jid} type=${type}`)
+    const result = await Promise.race([
       this.socket.sendMessage(jid, content),
       new Promise((_, reject) => setTimeout(() => reject(new Error(`sendMessage timeout após ${timeoutMs}ms`)), timeoutMs))
     ])
+    console.log(`[${this.instanceName}] sendMessage OK → id=${result?.key?.id || 'sem-id'}`)
+    return result
   }
 
   async enviarTexto(numero, texto) {
@@ -383,11 +387,18 @@ class WAConnection {
 
   _formatarJID(numero) {
     const s = String(numero)
-    // Se já é um JID completo (tem @), usa direto
-    if (s.includes('@')) return s
+    if (s.includes('@')) {
+      // @lid é ID interno do WhatsApp — para ENVIO precisa ser @s.whatsapp.net
+      if (s.endsWith('@lid')) {
+        const num = s.replace(/@lid$/, '').replace(/\D/g, '')
+        return `${num}@s.whatsapp.net`
+      }
+      return s
+    }
     const limpo = s.replace(/\D/g, '')
-    // Se temos o JID completo mapeado (ex: @lid), usa ele
-    if (this._jidCache[limpo]) return this._jidCache[limpo]
+    // Cache pode ter @lid — converte para @s.whatsapp.net
+    const cached = this._jidCache[limpo]
+    if (cached && !cached.endsWith('@lid')) return cached
     return `${limpo}@s.whatsapp.net`
   }
 
