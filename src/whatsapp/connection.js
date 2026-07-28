@@ -99,17 +99,19 @@ class WAConnection {
             console.log(`[${this.instanceName}] QR expirou/rejeitado. Aguardando ${delay/1000}s para novo QR...`)
             setTimeout(() => this.connect(), delay)
           } else if (codigo === 405 || errMsg.toLowerCase().includes('connection failure')) {
-            // 405 = WhatsApp rejeitou a sessão (credenciais inválidas no servidor)
+            // 405 = WhatsApp rejeitou a conexão (sessão inválida OU IP bloqueado)
             this._failCount405++
             if (this._failCount405 >= 5) {
-              console.log(`[${this.instanceName}] 5 falhas 405 consecutivas — sessão inválida. Limpando credenciais para gerar novo QR...`)
+              // Após 5 falhas: IP provavelmente bloqueado. Limpa credenciais e aguarda 30 min.
+              console.log(`[${this.instanceName}] 5 falhas 405 — IP possivelmente bloqueado pelo WhatsApp. Pausando por 30 min...`)
               await this._limparCredenciais()
               this._failCount405 = 0
-              setTimeout(() => this.connect(), 10000)
+              // Aguarda 30 minutos para o bloqueio temporário do WhatsApp expirar
+              setTimeout(() => this.connect(), 30 * 60 * 1000)
             } else {
-              // Backoff exponencial: 10s, 20s, 40s, 80s
-              const delay = Math.min(10000 * Math.pow(2, this._failCount405 - 1), 120000)
-              console.log(`[${this.instanceName}] Falha 405 (${this._failCount405}/5). Aguardando ${delay/1000}s...`)
+              // Backoff exponencial: 30s, 60s, 120s, 240s
+              const delay = Math.min(30000 * Math.pow(2, this._failCount405 - 1), 300000)
+              console.log(`[${this.instanceName}] Falha 405 (${this._failCount405}/5). Aguardando ${Math.round(delay/1000)}s...`)
               setTimeout(() => this.connect(), delay)
             }
           } else {
