@@ -234,11 +234,26 @@ class WAConnection {
             const participant = msg.key?.participant   // fallback para dispositivos vinculados
             console.log(`[${this.instanceName}] @lid msg: senderPn=${senderPn} participant=${participant} senderLid=${msg.key?.senderLid}`)
             const lidNum = rawJid.replace(/@lid$/, '')
-            if (senderPn && !this._lidToPhone[lidNum]) {
+            if (senderPn) {
               const phone = String(senderPn).replace(/\D/g, '')
-              if (phone.length >= 10) {
-                this._lidToPhone[lidNum] = `${phone}@s.whatsapp.net`
-                console.log(`[${this.instanceName}] @lid mapeado via senderPn: ${rawJid} → ${phone}@s.whatsapp.net`)
+              const candidato = `${phone}@s.whatsapp.net`
+              // Roda onWhatsApp se não temos mapeamento OU se o atual é diferente do senderPn
+              // (contacts.upsert pode ter guardado um número errado antes)
+              if (phone.length >= 10 && this._lidToPhone[lidNum] !== candidato) {
+                try {
+                  const waRes = await this.socket.onWhatsApp(phone)
+                  const hit = waRes?.[0]
+                  if (hit?.exists && hit.jid) {
+                    this._lidToPhone[lidNum] = hit.jid
+                    console.log(`[${this.instanceName}] @lid onWhatsApp: ${rawJid} senderPn=${phone} → ${hit.jid} (lid_wa=${hit.lid})`)
+                  } else {
+                    console.warn(`[${this.instanceName}] @lid senderPn=${phone} não existe no WA (onWhatsApp vazio)`)
+                    if (!this._lidToPhone[lidNum]) this._lidToPhone[lidNum] = candidato // fallback apenas se nada mais
+                  }
+                } catch (e) {
+                  if (!this._lidToPhone[lidNum]) this._lidToPhone[lidNum] = candidato
+                  console.log(`[${this.instanceName}] @lid senderPn fallback (${e.message}): ${rawJid} → ${phone}@s.whatsapp.net`)
+                }
               }
             } else if (participant && participant.endsWith('@s.whatsapp.net') && !this._lidToPhone[lidNum]) {
               this._lidToPhone[lidNum] = participant
