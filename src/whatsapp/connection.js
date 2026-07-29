@@ -253,19 +253,22 @@ class WAConnection {
               console.log(`[${this.instanceName}] @lid sem senderPn nem participant — key=${JSON.stringify(msg.key)}`)
             }
 
-            // Na PRIMEIRA mensagem de cada @lid: apaga sessões Signal obsoletas do phone JID.
-            // Sessões stale causam HMAC mismatch → erro 463. Apagando, Baileys faz fresh pre-key
-            // exchange no próximo envio, garantindo chaves corretas.
+            // Na PRIMEIRA mensagem de cada @lid: apaga sessões Signal obsoletas (LID + phone).
+            // O ratchet LID acumula posições erradas de envios anteriores com chave incorreta.
+            // Apagando ambas, Baileys faz fresh pre-key exchange no próximo envio.
             if (!this._verifiedLids.has(lidNum)) {
               this._verifiedLids.add(lidNum)
+              const sessionKeys = {}
+              // Apaga sessões LID (causa raiz do 463: ratchet send > ratchet receive do destinatário)
+              for (let d = 0; d <= 5; d++) sessionKeys[`${lidNum}.${d}`] = null
+              // Apaga sessões phone também (limpeza complementar)
               const phoneJid = this._lidToPhone[lidNum]
               if (phoneJid && phoneJid.endsWith('@s.whatsapp.net')) {
                 const phoneUser = phoneJid.replace('@s.whatsapp.net', '')
-                const sessionKeys = {}
                 for (let d = 0; d <= 5; d++) sessionKeys[`${phoneUser}.${d}`] = null
-                await this.socket.authState.keys.set({ session: sessionKeys })
-                console.log(`[${this.instanceName}] @lid sessões Signal apagadas → fresh pre-key para ${phoneJid}`)
               }
+              await this.socket.authState.keys.set({ session: sessionKeys })
+              console.log(`[${this.instanceName}] @lid sessões limpas (lid=${lidNum} phone=${this._lidToPhone[lidNum] || 'não mapeado'}) → fresh pre-key no próximo envio`)
             }
           }
 
