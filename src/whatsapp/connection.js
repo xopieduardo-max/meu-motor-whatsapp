@@ -45,8 +45,9 @@ class WAConnection {
     this.status = 'disconnected'
     this._jidCache = {}
     this._lidToPhone = {}
+    this._verifiedLids = new Set() // LIDs já verificados via onWhatsApp
     this._debounce = {}
-    this._failCount405 = 0  // contador de falhas consecutivas 405
+    this._failCount405 = 0
   }
 
   async connect() {
@@ -234,27 +235,34 @@ class WAConnection {
             const participant = msg.key?.participant   // fallback para dispositivos vinculados
             console.log(`[${this.instanceName}] @lid msg: senderPn=${senderPn} participant=${participant} senderLid=${msg.key?.senderLid}`)
             const lidNum = rawJid.replace(/@lid$/, '')
-            if (senderPn) {
-              const phone = String(senderPn).replace(/\D/g, '')
-              const candidato = `${phone}@s.whatsapp.net`
-              // Roda onWhatsApp se não temos mapeamento OU se o atual é diferente do senderPn
-              // (contacts.upsert pode ter guardado um número errado antes)
-              if (phone.length >= 10 && this._lidToPhone[lidNum] !== candidato) {
+            // Verifica via onWhatsApp na PRIMEIRA mensagem de cada @lid (independente de mapping existente)
+            if (!this._verifiedLids.has(lidNum)) {
+              this._verifiedLids.add(lidNum)
+              const phone = senderPn ? String(senderPn).replace(/\D/g, '') : null
+              console.log(`[${this.instanceName}] @lid verificando: lidNum=${lidNum} senderPn=${phone} mapeamentoAtual=${this._lidToPhone[lidNum]}`)
+              if (phone && phone.length >= 10) {
                 try {
                   const waRes = await this.socket.onWhatsApp(phone)
                   const hit = waRes?.[0]
+                  console.log(`[${this.instanceName}] @lid onWhatsApp resultado: phone=${phone} exists=${hit?.exists} jid=${hit?.jid} lid_wa=${hit?.lid}`)
                   if (hit?.exists && hit.jid) {
+                    const old = this._lidToPhone[lidNum]
                     this._lidToPhone[lidNum] = hit.jid
-                    console.log(`[${this.instanceName}] @lid onWhatsApp: ${rawJid} senderPn=${phone} → ${hit.jid} (lid_wa=${hit.lid})`)
+                    if (old !== hit.jid) console.log(`[${this.instanceName}] @lid mapping atualizado: ${rawJid} → ${hit.jid}${old ? ` (era ${old})` : ''}`)
                   } else {
-                    console.warn(`[${this.instanceName}] @lid senderPn=${phone} não existe no WA (onWhatsApp vazio)`)
-                    if (!this._lidToPhone[lidNum]) this._lidToPhone[lidNum] = candidato // fallback apenas se nada mais
+                    console.warn(`[${this.instanceName}] @lid senderPn=${phone} retornou vazio no onWhatsApp — numero inválido no WA`)
                   }
                 } catch (e) {
-                  if (!this._lidToPhone[lidNum]) this._lidToPhone[lidNum] = candidato
-                  console.log(`[${this.instanceName}] @lid senderPn fallback (${e.message}): ${rawJid} → ${phone}@s.whatsapp.net`)
+                  console.warn(`[${this.instanceName}] @lid onWhatsApp erro: ${e.message}`)
                 }
+              } else {
+                console.log(`[${this.instanceName}] @lid sem senderPn — usando apenas mapping de contacts`)
               }
+            }
+
+            if (senderPn && !this._lidToPhone[lidNum]) {
+              const phone = String(senderPn).replace(/\D/g, '')
+              if (phone.length >= 10) this._lidToPhone[lidNum] = `${phone}@s.whatsapp.net`
             } else if (participant && participant.endsWith('@s.whatsapp.net') && !this._lidToPhone[lidNum]) {
               this._lidToPhone[lidNum] = participant
               console.log(`[${this.instanceName}] @lid mapeado via participant: ${rawJid} → ${participant}`)
