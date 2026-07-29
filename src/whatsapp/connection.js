@@ -68,6 +68,9 @@ class WAConnection {
         retryRequestDelayMs: 2000,
         syncFullHistory: false,
         markOnlineOnConnect: false,
+        // Força USync fresh a cada envio — necessário para descobrir dispositivos LID
+        // (cache desatualizado omite o @lid device do destinatário → criptografia errada → 463)
+        useUserDevicesCache: false,
       })
 
       this.socket.ev.on('connection.update', async (update) => {
