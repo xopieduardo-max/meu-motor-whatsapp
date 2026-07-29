@@ -228,46 +228,41 @@ class WAConnection {
           if (rawJid.endsWith('@g.us') || rawJid.endsWith('@broadcast') || rawJid === 'status@broadcast') continue
           if (msg.key.fromMe) continue // ignora mensagens enviadas pelo bot
 
-          // Extrai mapeamento @lid → phone
-          // WhatsApp protocol inclui sender_pn (phone number) no campo key.senderPn de msgs @lid
+          // Extrai mapeamento @lid → phone e limpa sessão Signal obsoleta
           if (rawJid.endsWith('@lid')) {
-            const senderPn    = msg.key?.senderPn      // telefone real (ex: "5543999999999")
-            const participant = msg.key?.participant   // fallback para dispositivos vinculados
-            console.log(`[${this.instanceName}] @lid msg: senderPn=${senderPn} participant=${participant} senderLid=${msg.key?.senderLid}`)
+            const senderPn    = msg.key?.senderPn
+            const participant = msg.key?.participant
             const lidNum = rawJid.replace(/@lid$/, '')
-            // Verifica via onWhatsApp na PRIMEIRA mensagem de cada @lid (independente de mapping existente)
-            if (!this._verifiedLids.has(lidNum)) {
-              this._verifiedLids.add(lidNum)
-              const phone = senderPn ? String(senderPn).replace(/\D/g, '') : null
-              console.log(`[${this.instanceName}] @lid verificando: lidNum=${lidNum} senderPn=${phone} mapeamentoAtual=${this._lidToPhone[lidNum]}`)
-              if (phone && phone.length >= 10) {
-                try {
-                  const waRes = await this.socket.onWhatsApp(phone)
-                  const hit = waRes?.[0]
-                  console.log(`[${this.instanceName}] @lid onWhatsApp resultado: phone=${phone} exists=${hit?.exists} jid=${hit?.jid} lid_wa=${hit?.lid}`)
-                  if (hit?.exists && hit.jid) {
-                    const old = this._lidToPhone[lidNum]
-                    this._lidToPhone[lidNum] = hit.jid
-                    if (old !== hit.jid) console.log(`[${this.instanceName}] @lid mapping atualizado: ${rawJid} → ${hit.jid}${old ? ` (era ${old})` : ''}`)
-                  } else {
-                    console.warn(`[${this.instanceName}] @lid senderPn=${phone} retornou vazio no onWhatsApp — numero inválido no WA`)
-                  }
-                } catch (e) {
-                  console.warn(`[${this.instanceName}] @lid onWhatsApp erro: ${e.message}`)
-                }
-              } else {
-                console.log(`[${this.instanceName}] @lid sem senderPn — usando apenas mapping de contacts`)
-              }
-            }
 
+            console.log(`[${this.instanceName}] @lid msg: senderPn=${senderPn} participant=${participant} senderLid=${msg.key?.senderLid}`)
+
+            // Constrói mapeamento — senderPn vem direto do protocolo WA, é o mais confiável
             if (senderPn && !this._lidToPhone[lidNum]) {
               const phone = String(senderPn).replace(/\D/g, '')
-              if (phone.length >= 10) this._lidToPhone[lidNum] = `${phone}@s.whatsapp.net`
+              if (phone.length >= 10) {
+                this._lidToPhone[lidNum] = `${phone}@s.whatsapp.net`
+                console.log(`[${this.instanceName}] @lid mapeado: ${rawJid} → ${this._lidToPhone[lidNum]}`)
+              }
             } else if (participant && participant.endsWith('@s.whatsapp.net') && !this._lidToPhone[lidNum]) {
               this._lidToPhone[lidNum] = participant
               console.log(`[${this.instanceName}] @lid mapeado via participant: ${rawJid} → ${participant}`)
-            } else if (!senderPn && !participant) {
-              console.log(`[${this.instanceName}] @lid sem senderPn nem participant — fullKey=${JSON.stringify(msg.key)}`)
+            } else if (!senderPn && !participant && !this._lidToPhone[lidNum]) {
+              console.log(`[${this.instanceName}] @lid sem senderPn nem participant — key=${JSON.stringify(msg.key)}`)
+            }
+
+            // Na PRIMEIRA mensagem de cada @lid: apaga sessões Signal obsoletas do phone JID.
+            // Sessões stale causam HMAC mismatch → erro 463. Apagando, Baileys faz fresh pre-key
+            // exchange no próximo envio, garantindo chaves corretas.
+            if (!this._verifiedLids.has(lidNum)) {
+              this._verifiedLids.add(lidNum)
+              const phoneJid = this._lidToPhone[lidNum]
+              if (phoneJid && phoneJid.endsWith('@s.whatsapp.net')) {
+                const phoneUser = phoneJid.replace('@s.whatsapp.net', '')
+                const sessionKeys = {}
+                for (let d = 0; d <= 5; d++) sessionKeys[`${phoneUser}.${d}`] = null
+                await this.socket.authState.keys.set({ session: sessionKeys })
+                console.log(`[${this.instanceName}] @lid sessões Signal apagadas → fresh pre-key para ${phoneJid}`)
+              }
             }
           }
 
