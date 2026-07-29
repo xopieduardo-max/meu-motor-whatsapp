@@ -45,8 +45,6 @@ class WAConnection {
     this.status = 'disconnected'
     this._jidCache = {}
     this._lidToPhone = {}
-    this._verifiedLids = new Set()
-    this._sessionClearedBeforeSend = new Set() // LIDs que já tiveram sessão limpa antes do envio
     this._debounce = {}
     this._failCount405 = 0
   }
@@ -254,23 +252,6 @@ class WAConnection {
               console.log(`[${this.instanceName}] @lid sem senderPn nem participant — key=${JSON.stringify(msg.key)}`)
             }
 
-            // Na PRIMEIRA mensagem de cada @lid: apaga sessões Signal obsoletas (LID + phone).
-            // O ratchet LID acumula posições erradas de envios anteriores com chave incorreta.
-            // Apagando ambas, Baileys faz fresh pre-key exchange no próximo envio.
-            if (!this._verifiedLids.has(lidNum)) {
-              this._verifiedLids.add(lidNum)
-              const sessionKeys = {}
-              // Apaga sessões LID (causa raiz do 463: ratchet send > ratchet receive do destinatário)
-              for (let d = 0; d <= 5; d++) sessionKeys[`${lidNum}.${d}`] = null
-              // Apaga sessões phone também (limpeza complementar)
-              const phoneJid = this._lidToPhone[lidNum]
-              if (phoneJid && phoneJid.endsWith('@s.whatsapp.net')) {
-                const phoneUser = phoneJid.replace('@s.whatsapp.net', '')
-                for (let d = 0; d <= 5; d++) sessionKeys[`${phoneUser}.${d}`] = null
-              }
-              await this.socket.authState.keys.set({ session: sessionKeys })
-              console.log(`[${this.instanceName}] @lid sessões limpas (lid=${lidNum} phone=${this._lidToPhone[lidNum] || 'não mapeado'}) → fresh pre-key no próximo envio`)
-            }
           }
 
           // Para append, só processa mensagens dos últimos 3 minutos (evita reprocessar histórico antigo)
@@ -394,19 +375,15 @@ class WAConnection {
   // Wrapper com timeout de 20s para socket.sendMessage (evita hanging indefinido)
   async _sendWithTimeout(jid, content, timeoutMs = 20000) {
     const type = Object.keys(content)[0]
-    // Para JIDs @lid: limpa sessão Signal AQUI (não em messages.upsert) para evitar
-    // race condition onde Baileys grava a sessão corrompida após o nosso delete.
-    // Ao limpar 600ms+ depois, o storeSession do libsignal já completou, garantindo
-    // que assertSessions vai buscar pre-key fresh em vez de usar o ratchet dessincronizado.
+    // Para JIDs @lid: SEMPRE limpa sessão Signal antes de enviar.
+    // Garante pkmsg fresh a cada envio — evita ratchet dessincronizado acumulado de envios anteriores.
+    // Cada pkmsg carrega material criptográfico completo; o destinatário processa cada um de forma independente.
     if (jid.endsWith('@lid')) {
       const lidNum = jid.replace(/@lid$/, '')
-      if (!this._sessionClearedBeforeSend.has(lidNum)) {
-        this._sessionClearedBeforeSend.add(lidNum)
-        const sessionKeys = {}
-        for (let d = 0; d <= 5; d++) sessionKeys[`${lidNum}.${d}`] = null
-        await this.socket.authState.keys.set({ session: sessionKeys })
-        console.log(`[${this.instanceName}] pré-envio: sessão LID ${lidNum} limpa → assertSessions vai buscar pre-key fresh`)
-      }
+      const sessionKeys = {}
+      for (let d = 0; d <= 5; d++) sessionKeys[`${lidNum}.${d}`] = null
+      await this.socket.authState.keys.set({ session: sessionKeys })
+      console.log(`[${this.instanceName}] pré-envio: sessão LID ${lidNum} limpa → pkmsg fresh`)
     }
     console.log(`[${this.instanceName}] sendMessage → jid=${jid} type=${type}`)
     const opts = jid.endsWith('@lid') ? { additionalAttributes: { addressing_mode: 'lid' } } : {}
