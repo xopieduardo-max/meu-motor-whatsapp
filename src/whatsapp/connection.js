@@ -133,24 +133,48 @@ class WAConnection {
 
       this.socket.ev.on('creds.update', saveCreds)
 
-      // Mapeia @lid → @s.whatsapp.net — Baileys dispara quando sincroniza contatos
-      // Sem este mapa, _formatarJID não sabe o número real de contatos multi-device
-      this.socket.ev.on('contacts.upsert', (contacts) => {
+      // Mapeia @lid → @s.whatsapp.net via contacts.upsert, contacts.update e messaging-history.set
+      const _processContacts = (contacts, source) => {
         let mapped = 0
-        for (const c of contacts) {
+        for (const c of (contacts || [])) {
+          // Log TODOS os contatos @lid para entender o formato real do Baileys
+          if (c.lid || (c.id && c.id.includes('@lid'))) {
+            console.log(`[${this.instanceName}] ${source} lid-contact: ${JSON.stringify({ id: c.id, lid: c.lid, notify: c.notify, name: c.name })}`)
+          }
+          // Caso 1: c.id é @s.whatsapp.net, c.lid é o @lid
           if (c.lid && c.id && c.id.endsWith('@s.whatsapp.net')) {
-            const lidNum = String(c.lid).replace(/@lid$/, '')
-            if (!this._lidToPhone[lidNum]) {
-              this._lidToPhone[lidNum] = c.id
-              mapped++
+            const lidNum = String(c.lid).replace(/@.*$/, '')
+            if (!this._lidToPhone[lidNum]) { this._lidToPhone[lidNum] = c.id; mapped++ }
+          }
+          // Caso 2: c.id é @lid, c.lid é @s.whatsapp.net (campos invertidos)
+          if (c.id && c.id.endsWith('@lid') && c.lid && c.lid.endsWith('@s.whatsapp.net')) {
+            const lidNum = c.id.replace(/@lid$/, '')
+            if (!this._lidToPhone[lidNum]) { this._lidToPhone[lidNum] = c.lid; mapped++ }
+          }
+          // Caso 3: c.id é @lid e c.lid não existe — tenta deduzir pelo notify (se for número)
+          if (c.id && c.id.endsWith('@lid') && !c.lid && c.notify) {
+            const digitsOnly = String(c.notify).replace(/\D/g, '')
+            if (digitsOnly.length >= 10) {
+              const lidNum = c.id.replace(/@lid$/, '')
+              if (!this._lidToPhone[lidNum]) {
+                this._lidToPhone[lidNum] = `${digitsOnly}@s.whatsapp.net`
+                mapped++
+              }
             }
           }
         }
-        if (mapped > 0) console.log(`[${this.instanceName}] contacts.upsert: ${mapped} novos mapeamentos @lid→phone`)
-      })
+        if (mapped > 0) console.log(`[${this.instanceName}] ${source}: ${mapped} novos mapeamentos @lid→phone (total=${Object.keys(this._lidToPhone).length})`)
+      }
+
+      this.socket.ev.on('contacts.upsert', (contacts) => _processContacts(contacts, 'contacts.upsert'))
+      this.socket.ev.on('contacts.update', (contacts) => _processContacts(contacts, 'contacts.update'))
 
       // Captura histórico de mensagens quando Baileys reconecta/sincroniza
-      this.socket.ev.on('messaging-history.set', async ({ messages: histMsgs, chats }) => {
+      this.socket.ev.on('messaging-history.set', async ({ messages: histMsgs, contacts: histContacts, chats }) => {
+        // Processa contatos do sync inicial — provavelmente têm mapeamento @lid → phone
+        if (histContacts?.length) {
+          _processContacts(histContacts, 'messaging-history.set')
+        }
         if (!histMsgs?.length) return
         console.log(`[${this.instanceName}] Sincronizando ${histMsgs.length} mensagens históricas...`)
         const batch = []
@@ -194,7 +218,7 @@ class WAConnection {
         for (const msg of messages) {
           // Loga o remoteJid bruto para diagnóstico
           const rawJid = msg.key.remoteJid || ''
-          console.log(`[${this.instanceName}] rawJid=${rawJid} fromMe=${msg.key.fromMe} type=${type}`)
+          console.log(`[${this.instanceName}] rawJid=${rawJid} fromMe=${msg.key.fromMe} participant=${msg.key.participant} type=${type}`)
           if (typeof global.addDebugLog === 'function') {
             global.addDebugLog({ event: 'raw_message', instance: this.instanceName, rawJid, fromMe: msg.key.fromMe, msgType: Object.keys(msg.message || {}).join(','), type })
           }
@@ -202,6 +226,27 @@ class WAConnection {
           // Ignora grupos, broadcasts e status
           if (rawJid.endsWith('@g.us') || rawJid.endsWith('@broadcast') || rawJid === 'status@broadcast') continue
           if (msg.key.fromMe) continue // ignora mensagens enviadas pelo bot
+
+          // Extrai mapeamento @lid → phone
+          // WhatsApp protocol inclui sender_pn (phone number) no campo key.senderPn de msgs @lid
+          if (rawJid.endsWith('@lid')) {
+            const senderPn    = msg.key?.senderPn      // telefone real (ex: "5543999999999")
+            const participant = msg.key?.participant   // fallback para dispositivos vinculados
+            console.log(`[${this.instanceName}] @lid msg: senderPn=${senderPn} participant=${participant} senderLid=${msg.key?.senderLid}`)
+            const lidNum = rawJid.replace(/@lid$/, '')
+            if (senderPn && !this._lidToPhone[lidNum]) {
+              const phone = String(senderPn).replace(/\D/g, '')
+              if (phone.length >= 10) {
+                this._lidToPhone[lidNum] = `${phone}@s.whatsapp.net`
+                console.log(`[${this.instanceName}] @lid mapeado via senderPn: ${rawJid} → ${phone}@s.whatsapp.net`)
+              }
+            } else if (participant && participant.endsWith('@s.whatsapp.net') && !this._lidToPhone[lidNum]) {
+              this._lidToPhone[lidNum] = participant
+              console.log(`[${this.instanceName}] @lid mapeado via participant: ${rawJid} → ${participant}`)
+            } else if (!senderPn && !participant) {
+              console.log(`[${this.instanceName}] @lid sem senderPn nem participant — fullKey=${JSON.stringify(msg.key)}`)
+            }
+          }
 
           // Para append, só processa mensagens dos últimos 3 minutos (evita reprocessar histórico antigo)
           if (isAppend) {
