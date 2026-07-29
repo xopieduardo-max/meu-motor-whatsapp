@@ -377,9 +377,13 @@ class WAConnection {
 
   async _typing(jid, ms = 1200) {
     try {
-      await this.socket.sendPresenceUpdate('composing', jid)
+      // Presence update precisa de @s.whatsapp.net — resolve @lid para phone se disponível
+      const presenceJid = jid.endsWith('@lid')
+        ? (this._lidToPhone[jid.replace(/@lid$/, '')] || jid)
+        : jid
+      await this.socket.sendPresenceUpdate('composing', presenceJid)
       await new Promise(r => setTimeout(r, ms))
-      await this.socket.sendPresenceUpdate('paused', jid)
+      await this.socket.sendPresenceUpdate('paused', presenceJid)
     } catch {}
   }
 
@@ -387,8 +391,12 @@ class WAConnection {
   async _sendWithTimeout(jid, content, timeoutMs = 20000) {
     const type = Object.keys(content)[0]
     console.log(`[${this.instanceName}] sendMessage → jid=${jid} type=${type}`)
+    // Para JIDs @lid: adiciona addressing_mode='lid' para que o servidor WA aceite a rota LID.
+    // Baileys usa isLid=true → codifica o device como @lid → usa a sessão LID existente
+    // (estabelecida quando o destinatário mandou mensagem) → chaves corretas → sem 463.
+    const opts = jid.endsWith('@lid') ? { additionalAttributes: { addressing_mode: 'lid' } } : {}
     const result = await Promise.race([
-      this.socket.sendMessage(jid, content),
+      this.socket.sendMessage(jid, content, opts),
       new Promise((_, reject) => setTimeout(() => reject(new Error(`sendMessage timeout após ${timeoutMs}ms`)), timeoutMs))
     ])
     console.log(`[${this.instanceName}] sendMessage OK → id=${result?.key?.id || 'sem-id'}`)
@@ -489,33 +497,12 @@ class WAConnection {
   _formatarJID(numero) {
     const s = String(numero)
     if (s.includes('@')) {
-      if (s.endsWith('@lid')) {
-        const lidNum = s.replace(/@lid$/, '')
-        // Tenta resolver pelo mapa construído via contacts.upsert
-        const phoneJid = this._lidToPhone[lidNum]
-        if (phoneJid) {
-          console.log(`[${this.instanceName}] @lid resolvido: ${s} → ${phoneJid}`)
-          return phoneJid
-        }
-        // Mapeamento ainda não disponível — mantém @lid
-        // (@lid funciona para sendPresenceUpdate; para sendMessage pode falhar
-        //  mas é melhor que usar um número fictício @s.whatsapp.net)
-        console.warn(`[${this.instanceName}] @lid sem mapeamento: ${s} — usando @lid direto`)
-        return s
-      }
+      // Mantém @lid — não resolve para phone. O envio usa addressing_mode='lid' + sessão LID existente.
       return s
     }
     const limpo = s.replace(/\D/g, '')
-    // Se o cache tem @lid, tenta resolver; caso contrário usa direto
     const cached = this._jidCache[limpo]
-    if (cached) {
-      if (!cached.endsWith('@lid')) return cached
-      // Cached como @lid — tenta resolver
-      const lidNum = cached.replace(/@lid$/, '')
-      const phoneJid = this._lidToPhone[lidNum]
-      if (phoneJid) return phoneJid
-      return cached // mantém @lid se sem mapeamento
-    }
+    if (cached) return cached  // pode ser @lid ou @s.whatsapp.net
     return `${limpo}@s.whatsapp.net`
   }
 
