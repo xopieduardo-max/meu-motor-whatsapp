@@ -45,7 +45,8 @@ class WAConnection {
     this.status = 'disconnected'
     this._jidCache = {}
     this._lidToPhone = {}
-    this._verifiedLids = new Set() // LIDs já verificados via onWhatsApp
+    this._verifiedLids = new Set()
+    this._sessionClearedBeforeSend = new Set() // LIDs que já tiveram sessão limpa antes do envio
     this._debounce = {}
     this._failCount405 = 0
   }
@@ -393,10 +394,21 @@ class WAConnection {
   // Wrapper com timeout de 20s para socket.sendMessage (evita hanging indefinido)
   async _sendWithTimeout(jid, content, timeoutMs = 20000) {
     const type = Object.keys(content)[0]
+    // Para JIDs @lid: limpa sessão Signal AQUI (não em messages.upsert) para evitar
+    // race condition onde Baileys grava a sessão corrompida após o nosso delete.
+    // Ao limpar 600ms+ depois, o storeSession do libsignal já completou, garantindo
+    // que assertSessions vai buscar pre-key fresh em vez de usar o ratchet dessincronizado.
+    if (jid.endsWith('@lid')) {
+      const lidNum = jid.replace(/@lid$/, '')
+      if (!this._sessionClearedBeforeSend.has(lidNum)) {
+        this._sessionClearedBeforeSend.add(lidNum)
+        const sessionKeys = {}
+        for (let d = 0; d <= 5; d++) sessionKeys[`${lidNum}.${d}`] = null
+        await this.socket.authState.keys.set({ session: sessionKeys })
+        console.log(`[${this.instanceName}] pré-envio: sessão LID ${lidNum} limpa → assertSessions vai buscar pre-key fresh`)
+      }
+    }
     console.log(`[${this.instanceName}] sendMessage → jid=${jid} type=${type}`)
-    // Para JIDs @lid: adiciona addressing_mode='lid' para que o servidor WA aceite a rota LID.
-    // Baileys usa isLid=true → codifica o device como @lid → usa a sessão LID existente
-    // (estabelecida quando o destinatário mandou mensagem) → chaves corretas → sem 463.
     const opts = jid.endsWith('@lid') ? { additionalAttributes: { addressing_mode: 'lid' } } : {}
     const result = await Promise.race([
       this.socket.sendMessage(jid, content, opts),
