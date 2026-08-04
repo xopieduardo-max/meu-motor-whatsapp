@@ -89,15 +89,23 @@ async function processFollowups() {
         }
 
         // Busca variáveis atuais do contato (pode ter atualizado desde a matrícula)
-        const { data: latestSession } = await db
+        // Precisa do UUID de instances.id, não do remote_id, para filtrar flow_sessions
+        const { data: instRow } = await db
+          .from('instances')
+          .select('id')
+          .eq('remote_id', enrollment.instance_remote_id)
+          .maybeSingle()
+          .catch(() => ({ data: null }))
+
+        const { data: latestSession } = instRow?.id ? await db
           .from('flow_sessions')
           .select('variables')
-          .eq('instance_id', enrollment.instance_remote_id)
+          .eq('instance_id', instRow.id)
           .eq('contact_phone', enrollment.contact_phone)
           .order('updated_at', { ascending: false })
           .limit(1)
           .maybeSingle()
-          .catch(() => ({ data: null }))
+          .catch(() => ({ data: null })) : { data: null }
 
         const vars = { ...(enrollment.variables ?? {}), ...(latestSession?.variables ?? {}) }
 
