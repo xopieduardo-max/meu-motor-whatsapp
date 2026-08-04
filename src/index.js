@@ -29,6 +29,7 @@ const broadcastRoutes = require('./routes/broadcast')
 const triggerRoutes = require('./routes/trigger')
 const { iniciarJobLembretes } = require('./flows/reminder')
 const { iniciarJobAgendados } = require('./flows/scheduler')
+const { iniciarJobFollowup }  = require('./flows/followup')
 const { requireApiKey } = require('./middleware/auth')
 
 const app = express()
@@ -82,4 +83,5 @@ app.listen(PORT, async () => {
 
   iniciarJobLembretes()
   iniciarJobAgendados()
+  iniciarJobFollowup()
 })

@@ -270,6 +270,39 @@ async function runFlow(opts) {
       cur = nextNode(edges, cur, null); continue
     }
 
+    if (t === 'followup') {
+      const steps = Array.isArray(d.steps) ? d.steps : []
+      if (steps.length > 0) {
+        const db = getClient()
+        if (db) {
+          const firstDelay = Math.max(1, Number(steps[0]?.delay_hours) || 24)
+          const jitter = (Math.random() - 0.5) * 3_600_000 // ±30min
+          const nextStepAt = new Date(Date.now() + firstDelay * 3_600_000 + jitter)
+          // Cancela matrícula anterior ativa do mesmo contato na mesma instância
+          db.from('followup_enrollments')
+            .update({ status: 'cancelled', updated_at: new Date().toISOString() })
+            .eq('instance_remote_id', instanceId)
+            .eq('contact_phone', phone)
+            .eq('status', 'active')
+            .then(() => db.from('followup_enrollments').insert({
+              instance_remote_id: instanceId,
+              contact_phone: phone,
+              user_id: userId,
+              steps,
+              current_step: 0,
+              next_step_at: nextStepAt.toISOString(),
+              variables: vars,
+              status: 'active',
+              cancel_on_reply: d.cancelOnReply !== false,
+              send_window_start: Number(d.sendWindowStart) || 8,
+              send_window_end: Number(d.sendWindowEnd) || 20,
+            }))
+            .catch(e => console.error('[executor] followup: erro ao matricular:', e.message))
+        }
+      }
+      cur = nextNode(edges, cur, null); continue
+    }
+
     if (t === 'goto') {
       if (d.flowId) vars.__goto_flow_id = String(d.flowId)
       return { stoppedAt: null, ended: true, variables: vars, reminderDueAt: null }

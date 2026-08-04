@@ -300,6 +300,15 @@ class WAConnection {
             direction: 'in', type: messageType, content: inboxContent,
           }).catch(() => {})
 
+          // Cancela sequências de follow-up ativas (cancel_on_reply=true) — fire-and-forget
+          supabase.from('followup_enrollments')
+            .update({ status: 'cancelled', updated_at: new Date().toISOString() })
+            .eq('instance_remote_id', this.instanceId)
+            .eq('contact_phone', rawJid)
+            .eq('status', 'active')
+            .eq('cancel_on_reply', true)
+            .then(() => {}).catch(() => {})
+
           // Anti-flooding: debounce de 600ms por contato
           const debounceKey = `${this.instanceId}:${from}`
           if (this._debounce[debounceKey]) clearTimeout(this._debounce[debounceKey])
